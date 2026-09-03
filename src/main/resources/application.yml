@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: dcbo-backend
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/dcbo_placeholder}
+    username: ${DB_USERNAME:placeholder}
+    password: ${DB_PASSWORD:placeholder}
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${AUTH0_ISSUER_URI:https://placeholder.auth0.com/}
+          audiences: ${AUTH0_AUDIENCE:https://placeholder-audience/}
+
+server:
+  port: ${PORT:8080}
+
+# URL do catalog-backend para onde este serviço propaga alterações (carros, etc.)
+catalog:
+  sync:
+    base-url: ${CATALOG_SYNC_URL:http://localhost:8081}
+    internal-token: ${CATALOG_SYNC_TOKEN:placeholder}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
