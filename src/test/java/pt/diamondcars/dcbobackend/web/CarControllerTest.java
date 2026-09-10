@@ -18,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -29,6 +30,8 @@ import pt.diamondcars.dcbobackend.domain.car.Car;
 import pt.diamondcars.dcbobackend.domain.car.CarRepository;
 import pt.diamondcars.dcbobackend.domain.client.Client;
 import pt.diamondcars.dcbobackend.domain.client.ClientRepository;
+import pt.diamondcars.dcbobackend.domain.partner.Partner;
+import pt.diamondcars.dcbobackend.domain.partner.PartnerRepository;
 import pt.diamondcars.dcbobackend.support.AbstractPostgresIntegrationTest;
 import pt.diamondcars.dcbobackend.web.dto.CarRequest;
 import pt.diamondcars.dcbobackend.web.dto.HighlightRequest;
@@ -54,6 +57,22 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 	@Autowired private ObjectMapper objectMapper;
 	@Autowired private CarRepository carRepository;
 	@Autowired private ClientRepository clientRepository;
+	@Autowired private PartnerRepository partnerRepository;
+
+	/**
+	 * Clears every row this class writes before each test, so a car/client left behind by one test
+	 * (e.g. the 8 featured cars a highlight test creates) can never influence another. The
+	 * {@link AbstractPostgresIntegrationTest} container is a JVM-wide singleton with no per-test
+	 * rollback, so without this, state leaked across tests — the pre-existing {@code
+	 * listsCarsMostRecentlyCreatedFirstByDefault} test needed a {@code ?size=200} workaround for
+	 * exactly this reason (IMPORTANTE 6, {@code backlog/reviews/TASK-008-r1.md}).
+	 */
+	@BeforeEach
+	void cleanDatabase() {
+		carRepository.deleteAll();
+		clientRepository.deleteAll();
+		partnerRepository.deleteAll();
+	}
 
 	private static CarRequest validCarRequest() {
 		return new CarRequest(
@@ -264,6 +283,71 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-008-r1.md}): the positive control missing from the
+	 * test above — featuring the 8th car (with only 7 already featured) must succeed with 200. Only
+	 * together with the negative case (9th car, 8 already featured, rejected above) does this fix
+	 * the limit at exactly 8: a mutation of {@code HIGHLIGHT_LIMIT} to 1 previously left the whole
+	 * suite green because no test distinguished a limit of 8 from a limit of 1.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void allowsFeaturingExactlyTheEighthCar() throws Exception {
+		for (int i = 0; i < 7; i++) {
+			carRepository.saveAndFlush(aPersistedCar().modelo("Featured " + i).destaque(true).build());
+		}
+		Car eighthCar = carRepository.saveAndFlush(aPersistedCar().modelo("Eighth").build());
+
+		mockMvc
+				.perform(
+						patch("/api/cars/{id}/highlight", eighthCar.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(new HighlightRequest(true))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.destaque").value(true));
+	}
+
+	/**
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-008-r1.md}): un-featuring a car ({@code destaque:
+	 * false}) frees a slot for another one to be featured, exercising the {@code
+	 * alreadyFeatured}/"already at the limit but not adding a new one" branch of {@code
+	 * CarService#assertHighlightLimitRespected} that was previously never covered by any test.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void unfeaturingACarFreesUpASlotForAnother() throws Exception {
+		Car firstFeatured = null;
+		for (int i = 0; i < 8; i++) {
+			Car featured =
+					carRepository.saveAndFlush(aPersistedCar().modelo("Featured " + i).destaque(true).build());
+			if (i == 0) {
+				firstFeatured = featured;
+			}
+		}
+		Car waiting = carRepository.saveAndFlush(aPersistedCar().modelo("Waiting").build());
+
+		mockMvc
+				.perform(
+						patch("/api/cars/{id}/highlight", firstFeatured.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(new HighlightRequest(false))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.destaque").value(false));
+
+		mockMvc
+				.perform(
+						patch("/api/cars/{id}/highlight", waiting.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(new HighlightRequest(true))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.destaque").value(true));
+	}
+
+	/**
 	 * Acceptance criterion 5: {@code GET /api/cars} without an {@code Authorization} header responds
 	 * 401 — the global rule from {@code SecurityConfig} (TASK-007), re-verified here against a real
 	 * business endpoint rather than only the test-only probe {@code SecurityConfigTest} uses.
@@ -279,6 +363,10 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 	 * Acceptance criterion 6: {@code GET /api/cars} returns cars ordered by {@code createdAt}
 	 * descending by default.
 	 *
+	 * <p>No longer needs a {@code ?size=200} workaround to dodge state left over by earlier tests
+	 * (IMPORTANTE 6, {@code backlog/reviews/TASK-008-r1.md}): {@link #cleanDatabase()} guarantees
+	 * these are the only 3 cars in the database when this runs.
+	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}
 	 */
 	@Test
@@ -288,13 +376,69 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 		Car third = carRepository.saveAndFlush(aPersistedCar().modelo("Third").build());
 
 		mockMvc
-				.perform(
-						get("/api/cars?size=200")
-								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.perform(get("/api/cars").with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
 				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.content.length()").value(3))
 				.andExpect(jsonPath("$.content[0].id").value(third.getId().toString()))
 				.andExpect(jsonPath("$.content[1].id").value(second.getId().toString()))
 				.andExpect(jsonPath("$.content[2].id").value(first.getId().toString()));
+	}
+
+	/**
+	 * Requirement 1 / IMPORTANTE 2 ({@code backlog/reviews/TASK-008-r1.md}): {@code ?vendido=}
+	 * filters the listing to cars with exactly that value, treating {@code false} as a real filter
+	 * (not "no filter") — the case the review flagged as untested and most likely to hide an {@code
+	 * if (vendido != null)} accidentally narrowed to {@code if (Boolean.TRUE.equals(vendido))}.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void filtersTheListingByVendido() throws Exception {
+		Car sold = carRepository.saveAndFlush(aPersistedCar().modelo("Sold").vendido(true).build());
+		Car available = carRepository.saveAndFlush(aPersistedCar().modelo("Available").vendido(false).build());
+
+		mockMvc
+				.perform(
+						get("/api/cars?vendido=true")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.content.length()").value(1))
+				.andExpect(jsonPath("$.content[0].id").value(sold.getId().toString()));
+
+		mockMvc
+				.perform(
+						get("/api/cars?vendido=false")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.content.length()").value(1))
+				.andExpect(jsonPath("$.content[0].id").value(available.getId().toString()));
+	}
+
+	/**
+	 * Requirement 1 / IMPORTANTE 2 ({@code backlog/reviews/TASK-008-r1.md}): two filters given
+	 * together are combined with AND, which is the entire reason {@link
+	 * pt.diamondcars.dcbobackend.service.CarSpecifications} exists instead of one derived-query
+	 * method per filter.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void combinesTheVendidoAndDestaqueFiltersWithAnd() throws Exception {
+		Car match =
+				carRepository.saveAndFlush(
+						aPersistedCar().modelo("Match").vendido(false).destaque(true).build());
+		carRepository.saveAndFlush(
+				aPersistedCar().modelo("SoldAndFeatured").vendido(true).destaque(true).build());
+		carRepository.saveAndFlush(
+				aPersistedCar().modelo("AvailableNotFeatured").vendido(false).destaque(false).build());
+
+		mockMvc
+				.perform(
+						get("/api/cars?vendido=false&destaque=true")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.content.length()").value(1))
+				.andExpect(jsonPath("$.content[0].id").value(match.getId().toString()));
 	}
 
 	/**
@@ -365,5 +509,389 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 				.andExpect(jsonPath("$.images.length()").value(2))
 				.andExpect(jsonPath("$.images[0]").value("https://img/1.jpg"))
 				.andExpect(jsonPath("$.images[1]").value("https://img/2.jpg"));
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-008-r1.md}): selling a car that is already marked
+	 * as sold is rejected with 409 instead of silently re-applying the sale — proven here for the
+	 * worst case the review measured, a second {@code sell} call that omits {@code clienteId},
+	 * which used to detach the car from its original buyer without decrementing anything, leaving
+	 * that client's {@code purchases_count} inflated forever.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void sellingAnAlreadySoldCarIsRejectedAndLeavesTheOriginalSaleUntouched() throws Exception {
+		Client client =
+				clientRepository.saveAndFlush(
+						Client.builder().name("Cliente A").phone("911111111").build());
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+		SellCarRequest firstSale = new SellCarRequest(new BigDecimal("21000.00"), client.getId());
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(firstSale)))
+				.andExpect(status().isOk());
+
+		SellCarRequest secondSaleWithoutAClient = new SellCarRequest(new BigDecimal("19000.00"), null);
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(secondSaleWithoutAClient)))
+				.andExpect(status().isConflict());
+
+		mockMvc
+				.perform(
+						get("/api/cars/{id}", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(jsonPath("$.clienteId").value(client.getId().toString()))
+				.andExpect(jsonPath("$.precoVenda").value(21000.00));
+		assertThat(clientRepository.findById(client.getId()).orElseThrow().getPurchasesCount())
+				.isEqualTo(1);
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-008-r1.md}): selling the same car twice to the same
+	 * client — the simplest reproduction the review measured — does not double-count the purchase.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void sellingTheSameCarTwiceToTheSameClientDoesNotDoubleCountThePurchase() throws Exception {
+		Client client =
+				clientRepository.saveAndFlush(
+						Client.builder().name("Cliente B").phone("922222222").build());
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), client.getId());
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isConflict());
+
+		assertThat(clientRepository.findById(client.getId()).orElseThrow().getPurchasesCount())
+				.isEqualTo(1);
+	}
+
+	/**
+	 * BLOQUEADOR 2 ({@code backlog/reviews/TASK-008-r1.md}): an unknown {@code partnerId} in {@code
+	 * POST /api/cars} responds 404, instead of a foreign-key-violation 500 surfacing at flush time.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void creatingACarWithAnUnknownPartnerIdIsRejectedWith404() throws Exception {
+		CarRequest valid = validCarRequest();
+		CarRequest withUnknownPartner =
+				new CarRequest(
+						valid.marca(),
+						valid.modelo(),
+						valid.ano(),
+						valid.preco(),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						true,
+						UUID.randomUUID(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(withUnknownPartner)))
+				.andExpect(status().isNotFound());
+	}
+
+	/**
+	 * BLOQUEADOR 2 counterpart ({@code backlog/reviews/TASK-008-r1.md}): a real {@code partnerId}
+	 * is accepted (201) and echoed back in the response, the positive control on the same axis as
+	 * {@link #creatingACarWithAnUnknownPartnerIdIsRejectedWith404()} so that 404 is known to come
+	 * specifically from an unknown id and not some unrelated failure.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void creatingACarWithARealPartnerIncludesItsIdInTheResponse() throws Exception {
+		Partner partner =
+				partnerRepository.saveAndFlush(Partner.builder().name("Parceiro Teste").build());
+		CarRequest valid = validCarRequest();
+		CarRequest withPartner =
+				new CarRequest(
+						valid.marca(),
+						valid.modelo(),
+						valid.ano(),
+						valid.preco(),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						true,
+						partner.getId(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(withPartner)))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.partnerId").value(partner.getId().toString()));
+	}
+
+	/**
+	 * IMPORTANTE 1 ({@code backlog/reviews/TASK-008-r1.md}): a model year far in the future (the
+	 * browser's dynamic {@code LIMITS.YEAR_MAX}) is rejected with 400, where it used to be accepted
+	 * with 201.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsACarWithAModelYearTooFarInTheFuture() throws Exception {
+		CarRequest valid = validCarRequest();
+		CarRequest invalid =
+				new CarRequest(
+						valid.marca(),
+						valid.modelo(),
+						9999,
+						valid.preco(),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						valid.isConsignacao(),
+						valid.partnerId(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(invalid)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("ano")));
+	}
+
+	/**
+	 * IMPORTANTE 1 ({@code backlog/reviews/TASK-008-r1.md}): a price above the browser's {@code
+	 * LIMITS.PRICE_MAX} (10 million) is rejected with 400, where it used to be accepted with 201.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsACarWithAPriceAboveTheBusinessCeiling() throws Exception {
+		CarRequest valid = validCarRequest();
+		CarRequest invalid =
+				new CarRequest(
+						valid.marca(),
+						valid.modelo(),
+						valid.ano(),
+						new BigDecimal("50000000"),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						valid.isConsignacao(),
+						valid.partnerId(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(invalid)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("preco")));
+	}
+
+	/**
+	 * IMPORTANTE 1 ({@code backlog/reviews/TASK-008-r1.md}): a price large enough to overflow the
+	 * {@code numeric(12,2)} column is now caught by validation (400), where it used to reach the
+	 * database and fail with an unmapped 500 ({@code numeric field overflow}).
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsACarWithAPriceLargeEnoughToOverflowTheDatabaseColumn() throws Exception {
+		CarRequest valid = validCarRequest();
+		CarRequest invalid =
+				new CarRequest(
+						valid.marca(),
+						valid.modelo(),
+						valid.ano(),
+						new BigDecimal("99999999999"),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						valid.isConsignacao(),
+						valid.partnerId(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(invalid)))
+				.andExpect(status().isBadRequest());
+	}
+
+	/**
+	 * IMPORTANTE 1 ({@code backlog/reviews/TASK-008-r1.md}): unsanitised markup in {@code marca} is
+	 * rejected with 400, where it used to be accepted and echoed back verbatim — {@code marca}/
+	 * {@code modelo}/{@code cor} are rendered by the public catalogue via TASK-017.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsACarWithUnsanitisedMarkupInMarca() throws Exception {
+		CarRequest valid = validCarRequest();
+		CarRequest invalid =
+				new CarRequest(
+						"<script>alert(1)</script>",
+						valid.modelo(),
+						valid.ano(),
+						valid.preco(),
+						valid.km(),
+						valid.cor(),
+						valid.combustivel(),
+						valid.transmissao(),
+						valid.origem(),
+						valid.descricao(),
+						valid.precoCompra(),
+						valid.dataCompra(),
+						valid.isConsignacao(),
+						valid.partnerId(),
+						valid.commissionValue(),
+						valid.garantiaMeses(),
+						valid.destaque(),
+						valid.images(),
+						valid.imageThumbnails());
+
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(invalid)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("marca")));
+	}
+
+	/**
+	 * IMPORTANTE 4 ({@code backlog/reviews/TASK-008-r1.md}): a malformed JSON body responds 400 with
+	 * the same {@code ApiError} envelope as every other mapped error, instead of Spring MVC's
+	 * default body-less 400.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void malformedJsonBodyRespondsWithTheStandardErrorEnvelope() throws Exception {
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content("{not-valid-json"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").isNotEmpty());
+	}
+
+	/**
+	 * IMPORTANTE 4 ({@code backlog/reviews/TASK-008-r1.md}): a non-UUID path variable responds 400
+	 * with the same {@code ApiError} envelope, instead of Spring MVC's default body-less 400.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void aNonUuidPathVariableRespondsWithTheStandardErrorEnvelope() throws Exception {
+		mockMvc
+				.perform(
+						get("/api/cars/not-a-uuid")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").isNotEmpty());
+	}
+
+	/**
+	 * IMPORTANTE 4 ({@code backlog/reviews/TASK-008-r1.md}): an unknown {@code ?sort=} property
+	 * responds 400 with the standard {@code ApiError} envelope, instead of an unmapped {@code
+	 * PropertyReferenceException} surfacing as 500.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void anUnknownSortPropertyRespondsWith400InsteadOf500() throws Exception {
+		mockMvc
+				.perform(
+						get("/api/cars?sort=nosuchfield")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").isNotEmpty());
 	}
 }
