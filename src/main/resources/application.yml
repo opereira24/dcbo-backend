@@ -32,6 +32,13 @@ catalog:
     base-url: ${CATALOG_SYNC_URL:http://localhost:8081}
     internal-token: ${CATALOG_SYNC_TOKEN:placeholder}
 
+# Segurança (TASK-007): origens autorizadas a chamar esta API e o nome da claim de roles do Auth0
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+  auth0:
+    roles-claim: ${AUTH0_ROLES_CLAIM:https://diamondcars/roles}
+
 management:
   endpoints:
     web:
