@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
@@ -206,6 +208,56 @@ class SecurityConfigTest extends AbstractPostgresIntegrationTest {
 
 		assertThat(audienceValidator.validate(tokenForConfiguredAudience).hasErrors()).isFalse();
 		assertThat(audienceValidator.validate(tokenForAnUnconfiguredAudience).hasErrors()).isTrue();
+	}
+
+	/**
+	 * Regression test for {@code backlog/reviews/TASK-007-r1.md}, IMPORTANTE 2: proves that a
+	 * CORS preflight from an origin outside {@code app.cors.allowed-origins} is rejected by the real
+	 * filter chain, and that the response carries no {@code Access-Control-Allow-Origin} header — the
+	 * behaviour the reviewer confirmed manually and this test now fixes automatically.
+	 *
+	 * <p>Confirmed red before being fixed: removing {@code .cors(cors ->
+	 * cors.configurationSource(corsConfigurationSource))} from {@code SecurityConfig.java} (the CORS
+	 * bean stays declared but stops being applied to the chain) turned this preflight into a 401
+	 * (no CORS filter to short-circuit it before the authentication filter), so the {@code
+	 * isForbidden()} expectation failed while the rest of the suite stayed green.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void preflightFromAnUnlistedOriginIsRejected() throws Exception {
+		mockMvc
+				.perform(
+						options(PROTECTED_PROBE_PATH)
+								.header(HttpHeaders.ORIGIN, "https://evil.example")
+								.header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+				.andExpect(status().isForbidden())
+				.andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+	}
+
+	/**
+	 * Regression test for {@code backlog/reviews/TASK-007-r1.md}, IMPORTANTE 2: proves that a CORS
+	 * preflight from the configured origin is allowed, and echoes that exact origin back — never a
+	 * wildcard. This is what actually closes the gap the AC5 grep cannot: {@code
+	 * setAllowedOrigins(List.of("*"))} would pass the grep, but would make this test fail (the
+	 * response would allow {@code https://evil.example} too), since credentials are not required for
+	 * this behavioural check to distinguish the two.
+	 *
+	 * <p>Confirmed red before being fixed, symmetrically with {@link
+	 * #preflightFromAnUnlistedOriginIsRejected()}: with the same {@code .cors(...)} line removed, this
+	 * preflight also turned into a 401 instead of 200.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void preflightFromTheConfiguredOriginIsAllowed() throws Exception {
+		mockMvc
+				.perform(
+						options(PROTECTED_PROBE_PATH)
+								.header(HttpHeaders.ORIGIN, "http://localhost:3000")
+								.header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+				.andExpect(status().isOk())
+				.andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:3000"));
 	}
 
 	private static Jwt jwtWithAudience(String audience) {
