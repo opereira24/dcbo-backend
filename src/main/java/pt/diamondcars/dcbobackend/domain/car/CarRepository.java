@@ -3,12 +3,15 @@ package pt.diamondcars.dcbobackend.domain.car;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
 /**
  * Spring Data repository for {@link Car}, with the derived queries TASK-006 requirement 7 lists as
- * needed by the existing frontends.
+ * needed by the existing frontends, plus {@link JpaSpecificationExecutor} (TASK-008 requirement 1)
+ * so {@code GET /api/cars} can combine its optional {@code vendido}/{@code reservado}/{@code
+ * destaque} filters without one derived-query method per combination.
  */
-public interface CarRepository extends JpaRepository<Car, UUID> {
+public interface CarRepository extends JpaRepository<Car, UUID>, JpaSpecificationExecutor<Car> {
 
 	/**
 	 * Lists every car, most recently created first — equivalent to the back-office listing order in
@@ -32,4 +35,13 @@ public interface CarRepository extends JpaRepository<Car, UUID> {
 	 * @return cars where {@code destaque = true}
 	 */
 	List<Car> findByDestaqueTrue();
+
+	/**
+	 * Counts how many cars are currently featured, the value {@code
+	 * pt.diamondcars.dcbobackend.service.CarService} compares against the 8-car limit (TASK-008
+	 * requirement 1) before allowing one more car to be featured.
+	 *
+	 * @return the number of cars with {@code destaque = true}
+	 */
+	long countByDestaqueTrue();
 }
