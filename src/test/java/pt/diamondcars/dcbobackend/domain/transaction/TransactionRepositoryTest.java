@@ -2,6 +2,8 @@ package pt.diamondcars.dcbobackend.domain.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import org.junit.jupiter.api.Test;
@@ -15,7 +17,7 @@ import pt.diamondcars.dcbobackend.support.AbstractPostgresIntegrationTest;
 /**
  * {@code @DataJpaTest} for the {@link Transaction} aggregate: confirms it round-trips through the
  * real {@code transactions} table (TASK-006 requirement 10), that {@link TransactionType} survives
- * a save/reload cycle via its converter, and exercises {@link
+ * a save/reload cycle that actually hits the database via its converter, and exercises {@link
  * TransactionRepository#findByCarId(java.util.UUID)} (requirement 7).
  */
 @DataJpaTest
@@ -27,6 +29,9 @@ class TransactionRepositoryTest extends AbstractPostgresIntegrationTest {
 
 	@Autowired
 	private CarRepository carRepository;
+
+	@PersistenceContext
+	private EntityManager entityManager;
 
 	private static Car aCar() {
 		return Car.builder()
@@ -46,18 +51,26 @@ class TransactionRepositoryTest extends AbstractPostgresIntegrationTest {
 	 * Confirms a {@link Transaction} saved with a {@link TransactionType} enum value can be
 	 * reloaded with that same enum constant intact.
 	 *
+	 * <p>Uses {@code saveAndFlush} and then clears the persistence context before reloading: a
+	 * plain {@code save} followed by {@code findById} inside the same transaction would be served
+	 * entirely by Hibernate's first-level cache — no {@code INSERT} or {@code SELECT} would ever
+	 * reach the database, and the assertions below would pass regardless of whether the mapping or
+	 * the enum converter are even correct.
+	 *
 	 * @throws AssertionError if the reloaded transaction does not match what was saved
 	 */
 	@Test
 	void savesAndReloadsATransactionWithItsType() {
-		Transaction saved = transactionRepository.save(Transaction.builder()
+		Transaction saved = transactionRepository.saveAndFlush(Transaction.builder()
 				.tipo(TransactionType.DESPESA)
 				.valor(new BigDecimal("150.00"))
 				.data(LocalDate.of(2026, 1, 15))
 				.build());
+		entityManager.clear();
 
 		Transaction reloaded = transactionRepository.findById(saved.getId()).orElseThrow();
 
+		assertThat(reloaded).isNotSameAs(saved);
 		assertThat(reloaded.getTipo()).isEqualTo(TransactionType.DESPESA);
 		assertThat(reloaded.getValor()).isEqualByComparingTo(new BigDecimal("150.00"));
 	}

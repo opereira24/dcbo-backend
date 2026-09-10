@@ -2,6 +2,8 @@ package pt.diamondcars.dcbobackend.domain.lead;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,9 +16,9 @@ import pt.diamondcars.dcbobackend.support.AbstractPostgresIntegrationTest;
 /**
  * {@code @DataJpaTest} for the {@link Lead} aggregate: confirms it round-trips through the real
  * {@code leads} table (TASK-006 requirement 10), that its declared defaults ({@link
- * LeadStatus#CONTACTADO}, {@link LeadOrigin#WEBSITE}) survive a save/reload cycle via their
- * converters, and exercises {@link LeadRepository#findByCarIdOrderByCreatedAtDesc(java.util.UUID)}
- * (requirement 7).
+ * LeadStatus#CONTACTADO}, {@link LeadOrigin#WEBSITE}) survive a save/reload cycle that actually
+ * hits the database via their converters, and exercises {@link
+ * LeadRepository#findByCarIdOrderByCreatedAtDesc(java.util.UUID)} (requirement 7).
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -27,6 +29,9 @@ class LeadRepositoryTest extends AbstractPostgresIntegrationTest {
 
 	@Autowired
 	private CarRepository carRepository;
+
+	@PersistenceContext
+	private EntityManager entityManager;
 
 	private static Car aCar() {
 		return Car.builder()
@@ -46,15 +51,23 @@ class LeadRepositoryTest extends AbstractPostgresIntegrationTest {
 	 * Confirms a {@link Lead} saved with only its required fields set can be reloaded with its
 	 * database-matching defaults ({@link LeadStatus#CONTACTADO}, {@link LeadOrigin#WEBSITE}) intact.
 	 *
+	 * <p>Uses {@code saveAndFlush} and then clears the persistence context before reloading: a
+	 * plain {@code save} followed by {@code findById} inside the same transaction would be served
+	 * entirely by Hibernate's first-level cache — no {@code INSERT} or {@code SELECT} would ever
+	 * reach the database, and the assertions below would pass regardless of whether the mapping or
+	 * the enum converters are even correct.
+	 *
 	 * @throws AssertionError if the reloaded lead does not match what was saved
 	 */
 	@Test
 	void savesAndReloadsALeadWithDefaults() {
-		Lead saved = leadRepository.save(
+		Lead saved = leadRepository.saveAndFlush(
 				Lead.builder().nome("Joao Cliente").telefone("913456789").build());
+		entityManager.clear();
 
 		Lead reloaded = leadRepository.findById(saved.getId()).orElseThrow();
 
+		assertThat(reloaded).isNotSameAs(saved);
 		assertThat(reloaded.getStatus()).isEqualTo(LeadStatus.CONTACTADO);
 		assertThat(reloaded.getOrigem()).isEqualTo(LeadOrigin.WEBSITE);
 	}
