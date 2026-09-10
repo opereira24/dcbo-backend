@@ -25,15 +25,14 @@ import pt.diamondcars.dcbobackend.domain.partner.Partner;
 import pt.diamondcars.dcbobackend.domain.support.AbstractAuditableDomainEntity;
 
 /**
- * A car in the back-office inventory, mapped over the {@code cars} table of {@code V1__init.sql}.
+ * A car in the back-office inventory, mapped over the {@code cars} table of {@code V1__init.sql}
+ * (plus the FK rename of {@code V2__rename_fk_columns_to_english.sql}).
  *
- * <p>Association field names intentionally diverge from the mixed PT/EN column names of the
- * schema: {@link #partner} maps {@code partner_id} and {@link #cliente} maps {@code cliente_id},
- * following TASK-006 requirement 5 literally ("{@code Car.partner}, {@code Car.cliente}"). This is
- * a Java-level naming choice via explicit {@link JoinColumn}, independent of the pending planner
- * decision on the FK column naming convention itself (see {@code backlog/reviews/TASK-005-r2.md},
- * note 1 to the planner) — this entity follows {@code V1__init.sql} as written, per that review's
- * guidance, and does not preempt the decision.
+ * <p>Association field names follow {@code backlog/CONVENTIONS.md}, ADR-001: FK columns are
+ * always English ({@link #partner} maps {@code partner_id}, {@link #client} maps
+ * {@code client_id}), while scalar business attributes ({@code marca}, {@code preco}, {@code
+ * vendido}, ...) stay in Portuguese because that is how the {@code dc}/{@code dcbo} frontends
+ * already write them (ADR-001, Camada 2) — this class does not rename any of those.
  */
 @Getter
 @Setter
@@ -115,8 +114,8 @@ public class Car extends AbstractAuditableDomainEntity {
 	private BigDecimal precoVenda;
 
 	@ManyToOne(fetch = FetchType.LAZY)
-	@JoinColumn(name = "cliente_id")
-	private Client cliente;
+	@JoinColumn(name = "client_id")
+	private Client client;
 
 	@Builder.Default
 	@OneToMany(mappedBy = "car", cascade = CascadeType.ALL, orphanRemoval = true)
