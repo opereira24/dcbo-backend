@@ -2,13 +2,20 @@ package pt.diamondcars.dcbobackend.web;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import pt.diamondcars.dcbobackend.web.dto.ApiError;
+import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
 
@@ -22,6 +29,8 @@ import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+	private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
 	/**
 	 * Maps {@link ResourceNotFoundException} (a car, client, ... that does not exist) to 404.
@@ -47,6 +56,19 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(HighlightLimitExceededException.class)
 	public ResponseEntity<ApiError> handleConflict(
 			HighlightLimitExceededException exception, HttpServletRequest request) {
+		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link CarAlreadySoldException} (selling a car that is already marked as sold) to 409.
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(CarAlreadySoldException.class)
+	public ResponseEntity<ApiError> handleAlreadySold(
+			CarAlreadySoldException exception, HttpServletRequest request) {
 		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
 	}
 
@@ -90,6 +112,94 @@ public class ApiExceptionHandler {
 			AccessDeniedException exception, HttpServletRequest request) {
 		return respond(
 				HttpStatus.FORBIDDEN, "Autenticado, mas sem a role exigida para esta operacao", request);
+	}
+
+	/**
+	 * Maps a malformed or unreadable request body (invalid JSON, wrong content type body, ...) to
+	 * 400, instead of Spring MVC's default body-less 400 (IMPORTANTE 4, {@code
+	 * backlog/reviews/TASK-008-r1.md}).
+	 *
+	 * @param exception the exception Spring MVC raises when the {@code @RequestBody} cannot be
+	 *     deserialised
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 400 response body
+	 */
+	@ExceptionHandler(HttpMessageNotReadableException.class)
+	public ResponseEntity<ApiError> handleMalformedBody(
+			HttpMessageNotReadableException exception, HttpServletRequest request) {
+		return respond(HttpStatus.BAD_REQUEST, "Corpo do pedido invalido ou malformado", request);
+	}
+
+	/**
+	 * Maps a path variable or query parameter that cannot be converted to its expected type (e.g. a
+	 * non-UUID {@code {id}} in the path) to 400, instead of Spring MVC's default body-less 400
+	 * (IMPORTANTE 4, {@code backlog/reviews/TASK-008-r1.md}).
+	 *
+	 * @param exception the exception Spring MVC raises when argument conversion fails
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 400 response body
+	 */
+	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+	public ResponseEntity<ApiError> handleTypeMismatch(
+			MethodArgumentTypeMismatchException exception, HttpServletRequest request) {
+		return respond(
+				HttpStatus.BAD_REQUEST,
+				"Parametro '" + exception.getName() + "' com valor invalido",
+				request);
+	}
+
+	/**
+	 * Maps a {@code ?sort=} query parameter that names a property {@link
+	 * pt.diamondcars.dcbobackend.domain.car.Car} does not have to 400, instead of letting it reach
+	 * Spring Data unmapped and surface as a 500 (IMPORTANTE 4, {@code
+	 * backlog/reviews/TASK-008-r1.md}).
+	 *
+	 * @param exception the exception Spring Data raises when resolving an unknown sort property
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 400 response body
+	 */
+	@ExceptionHandler(PropertyReferenceException.class)
+	public ResponseEntity<ApiError> handleUnknownSortProperty(
+			PropertyReferenceException exception, HttpServletRequest request) {
+		return respond(
+				HttpStatus.BAD_REQUEST,
+				"Campo de ordenacao desconhecido: " + exception.getPropertyName(),
+				request);
+	}
+
+	/**
+	 * Maps a database constraint violation (e.g. a foreign key that no longer resolves at flush
+	 * time) to 409, without propagating the underlying Postgres message — which names internal
+	 * constraint/column identifiers that should not leak to a client (IMPORTANTE 4, {@code
+	 * backlog/reviews/TASK-008-r1.md}). The full exception is still logged server-side for
+	 * diagnosis.
+	 *
+	 * @param exception the exception the persistence layer raises on a constraint violation
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(DataIntegrityViolationException.class)
+	public ResponseEntity<ApiError> handleDataIntegrityViolation(
+			DataIntegrityViolationException exception, HttpServletRequest request) {
+		log.warn("Data integrity violation handling {}", request.getRequestURI(), exception);
+		return respond(
+				HttpStatus.CONFLICT, "Pedido em conflito com o estado atual dos dados", request);
+	}
+
+	/**
+	 * Fallback for every exception not mapped above, so the API never leaks a stack trace or an
+	 * inconsistent envelope for an unanticipated failure (IMPORTANTE 4, {@code
+	 * backlog/reviews/TASK-008-r1.md}). The full exception is still logged server-side for
+	 * diagnosis; only a generic message reaches the client.
+	 *
+	 * @param exception the unmapped exception
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 500 response body
+	 */
+	@ExceptionHandler(Exception.class)
+	public ResponseEntity<ApiError> handleUnexpected(Exception exception, HttpServletRequest request) {
+		log.error("Unexpected error handling {}", request.getRequestURI(), exception);
+		return respond(HttpStatus.INTERNAL_SERVER_ERROR, "Erro interno inesperado", request);
 	}
 
 	private ResponseEntity<ApiError> respond(HttpStatus status, String message, HttpServletRequest request) {

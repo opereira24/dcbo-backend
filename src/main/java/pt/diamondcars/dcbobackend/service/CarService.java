@@ -13,11 +13,13 @@ import pt.diamondcars.dcbobackend.domain.car.CarImage;
 import pt.diamondcars.dcbobackend.domain.car.CarRepository;
 import pt.diamondcars.dcbobackend.domain.client.Client;
 import pt.diamondcars.dcbobackend.domain.client.ClientRepository;
+import pt.diamondcars.dcbobackend.domain.partner.Partner;
 import pt.diamondcars.dcbobackend.domain.partner.PartnerRepository;
 import pt.diamondcars.dcbobackend.web.dto.CarRequest;
 import pt.diamondcars.dcbobackend.web.dto.CarResponse;
 import pt.diamondcars.dcbobackend.web.dto.HighlightRequest;
 import pt.diamondcars.dcbobackend.web.dto.SellCarRequest;
+import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
 
@@ -139,15 +141,28 @@ public class CarService {
 	 * dcbo/src/services/firebaseService.js:148}, and — within the same transaction (requirement 4)
 	 * — increments the buying client's {@code purchases_count} when a client is given.
 	 *
+	 * <p>Only a car that is not currently marked as sold may be sold: the {@code dcbo} frontend
+	 * only ever offers the "sell" action from the list of available cars ({@code
+	 * dcbo/src/App.js:323-370} is reachable only from there), so a sale is a one-way transition
+	 * from "not sold" to "sold", undone only by {@link #revertSale(UUID)}. Calling this on an
+	 * already-sold car is rejected rather than silently re-applied, because re-applying it would
+	 * double-count {@code purchases_count} (selling the same car twice to the same client) or
+	 * orphan the previous buyer's count forever (selling it again without a {@code clienteId},
+	 * which used to null out the client reference {@link #revertSale(UUID)} needs to decrement it).
+	 *
 	 * @param id the car's id
 	 * @param request the sale price and, optionally, the buying client's id
 	 * @return the updated car
 	 * @throws ResourceNotFoundException if the car, or the given client, does not exist (mapped to
 	 *     404)
+	 * @throws CarAlreadySoldException if the car is already marked as sold (mapped to 409)
 	 */
 	@Transactional
 	public CarResponse sell(UUID id, SellCarRequest request) {
 		Car car = findOrThrow(id);
+		if (car.isVendido()) {
+			throw new CarAlreadySoldException(id);
+		}
 		car.setVendido(true);
 		car.setPrecoVenda(request.precoVenda());
 		car.setDataVenda(OffsetDateTime.now());
@@ -262,8 +277,28 @@ public class CarService {
 		car.setCommissionValue(request.commissionValue());
 		car.setGarantiaMeses(request.garantiaMeses() != null ? request.garantiaMeses() : 0);
 		car.setDestaque(request.destaque());
-		car.setPartner(request.partnerId() != null ? partnerRepository.getReferenceById(request.partnerId()) : null);
+		car.setPartner(request.partnerId() != null ? requirePartner(request.partnerId()) : null);
 		applyImages(car, request.images(), request.imageThumbnails());
+	}
+
+	/**
+	 * Fetches a partner by id, failing fast instead of returning an uninitialised proxy.
+	 *
+	 * <p>Uses {@link PartnerRepository#findById(Object)} rather than {@code getReferenceById},
+	 * because a reference proxy for a non-existent id defers the failure to the next flush, where
+	 * it surfaces as an unmapped {@code DataIntegrityViolationException} (foreign key violation,
+	 * mapped by {@link pt.diamondcars.dcbobackend.web.ApiExceptionHandler} to a generic 409) rather
+	 * than the clean 404 a caller-supplied id deserves — the same failure mode already avoided ten
+	 * lines above for {@code clienteId} via {@link #incrementAndGetClient(UUID)}.
+	 *
+	 * @param partnerId the partner's id
+	 * @return the matching partner
+	 * @throws ResourceNotFoundException if no partner has this id (mapped to 404)
+	 */
+	private Partner requirePartner(UUID partnerId) {
+		return partnerRepository
+				.findById(partnerId)
+				.orElseThrow(() -> new ResourceNotFoundException("Parceiro nao encontrado: " + partnerId));
 	}
 
 	private void assertHighlightLimitRespected(Car car, boolean requestedDestaque) {
