@@ -15,7 +15,7 @@ public interface LeadRepository extends JpaRepository<Lead, UUID> {
 	 * getCarLeads} in {@code dcbo/src/services/firebaseService.js:460}.
 	 *
 	 * @param carId the {@link pt.diamondcars.dcbobackend.domain.car.Car} id to filter by
-	 * @return leads whose {@code carro_id} equals {@code carId}, ordered by {@code createdAt}
+	 * @return leads whose {@code car_id} equals {@code carId}, ordered by {@code createdAt}
 	 *         descending
 	 */
 	List<Lead> findByCarIdOrderByCreatedAtDesc(UUID carId);

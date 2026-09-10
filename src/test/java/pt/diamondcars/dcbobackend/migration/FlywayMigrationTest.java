@@ -114,9 +114,10 @@ class FlywayMigrationTest extends AbstractPostgresIntegrationTest {
 	/**
 	 * Confirms the business invariant behind BLOQ-1 of the TASK-005 review: deleting a client must
 	 * never delete the financial history tied to them, only detach it. Exercises the
-	 * {@code transactions.cliente_id ON DELETE SET NULL} foreign key end to end.
+	 * {@code transactions.client_id ON DELETE SET NULL} foreign key end to end (column renamed by
+	 * {@code V2__rename_fk_columns_to_english.sql}, {@code backlog/CONVENTIONS.md} ADR-001).
 	 *
-	 * @throws AssertionError if the transaction is removed, or its {@code cliente_id} is not
+	 * @throws AssertionError if the transaction is removed, or its {@code client_id} is not
 	 *         nulled out, after the referenced client is deleted
 	 */
 	@Test
@@ -127,14 +128,14 @@ class FlywayMigrationTest extends AbstractPostgresIntegrationTest {
 				"INSERT INTO clients (name, phone) VALUES (?, ?) RETURNING id",
 				UUID.class, "Cliente Teste", "912345678");
 		UUID transactionId = jdbcTemplate.queryForObject(
-				"INSERT INTO transactions (tipo, valor, data, cliente_id) "
+				"INSERT INTO transactions (tipo, valor, data, client_id) "
 						+ "VALUES (?, ?, CURRENT_DATE, ?) RETURNING id",
 				UUID.class, "receita", new BigDecimal("100.00"), clientId);
 
 		jdbcTemplate.update("DELETE FROM clients WHERE id = ?", clientId);
 
 		Map<String, Object> survivingTransaction = jdbcTemplate.queryForMap(
-				"SELECT cliente_id FROM transactions WHERE id = ?", transactionId);
-		assertThat(survivingTransaction.get("cliente_id")).isNull();
+				"SELECT client_id FROM transactions WHERE id = ?", transactionId);
+		assertThat(survivingTransaction.get("client_id")).isNull();
 	}
 }

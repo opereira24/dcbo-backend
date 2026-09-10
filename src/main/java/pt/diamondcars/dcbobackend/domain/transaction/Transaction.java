@@ -59,8 +59,8 @@ public class Transaction extends AbstractAuditableDomainEntity {
 	private Car car;
 
 	@ManyToOne(fetch = FetchType.LAZY)
-	@JoinColumn(name = "cliente_id")
-	private Client cliente;
+	@JoinColumn(name = "client_id")
+	private Client client;
 
 	@ManyToOne(fetch = FetchType.LAZY)
 	@JoinColumn(name = "partner_id")
