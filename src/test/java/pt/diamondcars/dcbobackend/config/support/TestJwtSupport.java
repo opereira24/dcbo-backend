@@ -68,15 +68,40 @@ public final class TestJwtSupport {
 	 * @return the signed, compact JWT
 	 */
 	public static String signedToken(String subject, List<String> audience) {
+		return signedToken(subject, audience, null, null);
+	}
+
+	/**
+	 * Signs a compact JWT exactly like {@link #signedToken(String, List)}, plus one extra claim —
+	 * used to exercise {@link pt.diamondcars.dcbobackend.config.Auth0RolesConverter} through the
+	 * real security filter chain (TASK-007 review, BLOQUEADOR 1), instead of only unit-testing the
+	 * converter in isolation.
+	 *
+	 * @param subject the {@code sub} claim
+	 * @param audience the {@code aud} claim
+	 * @param claimName name of the extra claim to add (e.g. the roles claim)
+	 * @param claimValue value of the extra claim, in whatever shape the caller wants to simulate
+	 *     (a {@link List}, a plain {@link String}, etc.)
+	 * @return the signed, compact JWT
+	 */
+	public static String signedTokenWithClaim(
+			String subject, List<String> audience, String claimName, Object claimValue) {
+		return signedToken(subject, audience, claimName, claimValue);
+	}
+
+	private static String signedToken(
+			String subject, List<String> audience, String claimName, Object claimValue) {
 		try {
-			JWTClaimsSet claims =
+			JWTClaimsSet.Builder claimsBuilder =
 					new JWTClaimsSet.Builder()
 							.subject(subject)
 							.audience(audience)
 							.issueTime(Date.from(Instant.now()))
-							.expirationTime(Date.from(Instant.now().plusSeconds(300)))
-							.build();
-			SignedJWT signedJwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+							.expirationTime(Date.from(Instant.now().plusSeconds(300)));
+			if (claimName != null) {
+				claimsBuilder.claim(claimName, claimValue);
+			}
+			SignedJWT signedJwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claimsBuilder.build());
 			signedJwt.sign(new MACSigner(SECRET_KEY.getEncoded()));
 			return signedJwt.serialize();
 		} catch (JOSEException e) {
