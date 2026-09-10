@@ -1,15 +1,19 @@
 package pt.diamondcars.dcbobackend.config;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.security.oauth2.server.resource.autoconfigure.OAuth2ResourceServerProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -19,6 +23,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimNames;
+import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,6 +55,8 @@ class SecurityConfigTest extends AbstractPostgresIntegrationTest {
 	private static final String PROTECTED_PROBE_PATH = "/api/security-probe";
 
 	@Autowired private MockMvc mockMvc;
+
+	@Autowired private OAuth2ResourceServerProperties resourceServerProperties;
 
 	@Value("${app.auth0.roles-claim}")
 	private String rolesClaim;
@@ -150,6 +160,62 @@ class SecurityConfigTest extends AbstractPostgresIntegrationTest {
 								.header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenWithAdminRole))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("ROLE_ADMIN")));
+	}
+
+	/**
+	 * Regression test for {@code backlog/reviews/TASK-007-r1.md}, IMPORTANTE 1: proves that the
+	 * {@code spring.security.oauth2.resourceserver.jwt.audiences} property that production actually
+	 * reads (via Spring Boot's auto-configured {@link OAuth2ResourceServerProperties}, the same bean
+	 * {@code JwtDecoderConfiguration.getValidator()} consumes to build the audience validator, per
+	 * the reviewer's decompilation of Spring Boot 4.1.1) is present, non-empty, and behaves like a
+	 * real audience validator when applied to a matching vs. a non-matching token.
+	 *
+	 * <p>ASSUNÇÃO: this reproduces {@code JwtDecoderConfiguration}'s {@code audienceValidator} logic
+	 * ({@link JwtClaimValidator} over the {@code aud} claim, accepting when it intersects the
+	 * configured audiences) instead of invoking the production {@link JwtDecoder} bean directly,
+	 * because that bean is wired to the real {@code issuer-uri} and performs OIDC discovery over the
+	 * network on first {@code decode()} — invoking it here would either require real network access
+	 * to Auth0 (forbidden, {@code backlog/DIRECTIVES.md}) or mocking the HTTP client Nimbus uses
+	 * internally, which would stop testing production wiring and start testing a mock. This is a
+	 * deliberate, documented trade-off for partial-but-faithful coverage, not an oversight.
+	 *
+	 * <p>Confirmed red before being fixed: deleting the {@code audiences:} line from {@code
+	 * application.yml} makes {@code resourceServerProperties.getJwt().getAudiences()} return {@code
+	 * null}, failing the first assertion below, while the rest of the suite (43 tests) stayed green —
+	 * exactly the blind spot the review reported.
+	 */
+	@Test
+	void audienceValidationIsWiredFromProductionConfiguration() {
+		List<String> configuredAudiences = resourceServerProperties.getJwt().getAudiences();
+
+		assertThat(configuredAudiences)
+				.as(
+						"sem esta property (spring.security.oauth2.resourceserver.jwt.audiences, "
+								+ "application.yml:24) o Boot nao acrescenta o validador de 'aud' "
+								+ "(JwtDecoderConfiguration.getValidator) e qualquer token do tenant e aceite")
+				.isNotNull()
+				.isNotEmpty();
+
+		OAuth2TokenValidator<Jwt> audienceValidator =
+				new JwtClaimValidator<List<String>>(
+						JwtClaimNames.AUD,
+						audiences -> audiences != null && !Collections.disjoint(audiences, configuredAudiences));
+
+		Jwt tokenForConfiguredAudience = jwtWithAudience(configuredAudiences.get(0));
+		Jwt tokenForAnUnconfiguredAudience = jwtWithAudience("https://not-configured.example/");
+
+		assertThat(audienceValidator.validate(tokenForConfiguredAudience).hasErrors()).isFalse();
+		assertThat(audienceValidator.validate(tokenForAnUnconfiguredAudience).hasErrors()).isTrue();
+	}
+
+	private static Jwt jwtWithAudience(String audience) {
+		return Jwt.withTokenValue("token")
+				.header("alg", "none")
+				.subject("auth0|test-user")
+				.audience(List.of(audience))
+				.issuedAt(Instant.now())
+				.expiresAt(Instant.now().plusSeconds(60))
+				.build();
 	}
 
 	/**
