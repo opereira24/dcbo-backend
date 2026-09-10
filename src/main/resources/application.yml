@@ -16,6 +16,14 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  data:
+    web:
+      pageable:
+        # Caps the effective page size Spring Data honours (default with no cap is ~2000, per
+        # backlog/reviews/TASK-008-r1.md IMPORTANTE 5/6): a client asking for an unreasonably
+        # large page amplifies the N+1 risk of any paginated listing across every future endpoint.
+        max-page-size: 100
+
   security:
     oauth2:
       resourceserver:

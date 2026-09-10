@@ -20,6 +20,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.annotations.BatchSize;
 import pt.diamondcars.dcbobackend.domain.client.Client;
 import pt.diamondcars.dcbobackend.domain.partner.Partner;
 import pt.diamondcars.dcbobackend.domain.support.AbstractAuditableDomainEntity;
@@ -117,9 +118,19 @@ public class Car extends AbstractAuditableDomainEntity {
 	@JoinColumn(name = "client_id")
 	private Client client;
 
+	/**
+	 * {@code @BatchSize} fetches the {@link CarImage} collections of up to 50 cars in a single
+	 * {@code IN (...)} query, instead of one query per car (IMPORTANTE 5, {@code
+	 * backlog/reviews/TASK-008-r1.md}: measured at 22 statements for a 20-car page before this
+	 * annotation — 1 count + 1 select + 20 per-car collection fetches). Preferred here over {@code
+	 * @EntityGraph}/join-fetch on the paginated query, which would apply the page's {@code LIMIT} to
+	 * the joined row count instead of the car count, silently truncating pages for cars with more
+	 * than one photo.
+	 */
 	@Builder.Default
 	@OneToMany(mappedBy = "car", cascade = CascadeType.ALL, orphanRemoval = true)
 	@OrderBy("position ASC")
+	@BatchSize(size = 50)
 	private List<CarImage> images = new ArrayList<>();
 
 	/**
