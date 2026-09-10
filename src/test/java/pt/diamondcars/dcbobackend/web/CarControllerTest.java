@@ -894,4 +894,84 @@ class CarControllerTest extends AbstractPostgresIntegrationTest {
 				.andExpect(jsonPath("$.status").value(400))
 				.andExpect(jsonPath("$.message").isNotEmpty());
 	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-008-r2.md}): a sub-path of {@code /api/cars} that no
+	 * {@code @GetMapping} handles responds 404, not the 500 the generic {@code Exception.class}
+	 * fallback used to produce by swallowing the {@code NoResourceFoundException} Spring MVC raises
+	 * for an unmapped route before it ever reached {@code DefaultHandlerExceptionResolver}.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void anUnmappedRouteInsideCarsRespondsWith404NotAGenericServerError() throws Exception {
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+
+		mockMvc
+				.perform(
+						get("/api/cars/{id}/does-not-exist", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.status").value(404));
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-008-r2.md}): a request with a method no mapping on
+	 * {@code /api/cars} accepts (only {@code GET}/{@code POST} are mapped there, never {@code
+	 * DELETE}) responds 405, not the 500 the generic fallback used to produce by swallowing {@link
+	 * org.springframework.web.HttpRequestMethodNotSupportedException}.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void aMethodNotMappedOnCarsRespondsWith405NotAGenericServerError() throws Exception {
+		mockMvc
+				.perform(delete("/api/cars").with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE))))
+				.andExpect(status().isMethodNotAllowed())
+				.andExpect(jsonPath("$.status").value(405));
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-008-r2.md}): {@code POST /api/cars} with a content
+	 * type the API cannot read (it only accepts JSON) responds 415, not the 500 the generic
+	 * fallback used to produce by swallowing {@link
+	 * org.springframework.web.HttpMediaTypeNotSupportedException}.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void anUnsupportedContentTypeOnCreateRespondsWith415NotAGenericServerError() throws Exception {
+		mockMvc
+				.perform(
+						post("/api/cars")
+								.with(jwt().authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.TEXT_PLAIN)
+								.content("not json"))
+				.andExpect(status().isUnsupportedMediaType())
+				.andExpect(jsonPath("$.status").value(415));
+	}
+
+	/**
+	 * IMPORTANTE ({@code backlog/reviews/TASK-008-r2.md}): {@code SellCarRequest.precoVenda} above
+	 * the same {@code CarRequest.PRICE_MAX_VALUE} ceiling the other monetary fields already enforce
+	 * responds 400 and names the field, instead of reaching the {@code preco_venda numeric(12,2)}
+	 * column and surfacing as a 409 "conflito" that misrepresents an input mistake as a data-state
+	 * conflict.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void sellingACarAbovePriceCeilingIsRejectedWith400InsteadOf409() throws Exception {
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+		SellCarRequest tooExpensive = new SellCarRequest(new BigDecimal("99999999999"), null);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(tooExpensive)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("precoVenda")));
+	}
 }

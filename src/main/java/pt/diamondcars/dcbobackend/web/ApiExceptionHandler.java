@@ -7,13 +7,21 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.ErrorResponseException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import pt.diamondcars.dcbobackend.web.dto.ApiError;
 import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
@@ -187,10 +195,52 @@ public class ApiExceptionHandler {
 	}
 
 	/**
+	 * Maps the standard Spring MVC exceptions that already carry their own correct client-error
+	 * status (unknown route, method not allowed, unsupported/not-acceptable content type, missing
+	 * request parameter) to that same status, instead of letting {@link #handleUnexpected(Exception,
+	 * HttpServletRequest)} below swallow them as 500.
+	 *
+	 * <p>BLOQUEADOR 1, {@code backlog/reviews/TASK-008-r2.md}: {@link
+	 * org.springframework.web.method.annotation.ExceptionHandlerExceptionResolver} (which resolves
+	 * {@code @ExceptionHandler} methods) runs before Spring MVC's own {@code
+	 * DefaultHandlerExceptionResolver}. Without this handler, the generic {@code Exception.class}
+	 * fallback below caught these exceptions first and degraded 404/405/415 to 500 — every one of
+	 * these types implements {@link ErrorResponse}, so its own {@link ErrorResponse#getStatusCode()}
+	 * is always the correct status to report, never {@link HttpStatus#INTERNAL_SERVER_ERROR}.
+	 *
+	 * @param exception one of the listed {@link ErrorResponse} exceptions Spring MVC raises for a
+	 *     client-side routing/content-negotiation error (declared as {@code Exception} because
+	 *     {@code @ExceptionHandler} requires a {@link Throwable} parameter type, and {@link
+	 *     ErrorResponse} is an interface, not a {@link Throwable})
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the response with the exception's own status, in the same {@link ApiError} envelope
+	 */
+	@ExceptionHandler({
+		NoResourceFoundException.class,
+		HttpRequestMethodNotSupportedException.class,
+		HttpMediaTypeNotSupportedException.class,
+		HttpMediaTypeNotAcceptableException.class,
+		MissingServletRequestParameterException.class,
+		ErrorResponseException.class
+	})
+	public ResponseEntity<ApiError> handleSpringMvcClientError(
+			Exception exception, HttpServletRequest request) {
+		HttpStatusCode statusCode = ((ErrorResponse) exception).getStatusCode();
+		HttpStatus status = HttpStatus.valueOf(statusCode.value());
+		return respond(status, status.getReasonPhrase(), request);
+	}
+
+	/**
 	 * Fallback for every exception not mapped above, so the API never leaks a stack trace or an
 	 * inconsistent envelope for an unanticipated failure (IMPORTANTE 4, {@code
 	 * backlog/reviews/TASK-008-r1.md}). The full exception is still logged server-side for
 	 * diagnosis; only a generic message reaches the client.
+	 *
+	 * <p>Never reaches the {@link ErrorResponse} exceptions mapped by {@link
+	 * #handleSpringMvcClientError(Exception, HttpServletRequest)} above: {@code @ExceptionHandler}
+	 * resolution always picks the most specific declared exception type for the thrown exception,
+	 * regardless of method declaration order (BLOQUEADOR 1, {@code
+	 * backlog/reviews/TASK-008-r2.md}).
 	 *
 	 * @param exception the unmapped exception
 	 * @param request the failed request, used to report {@link ApiError#path()}
