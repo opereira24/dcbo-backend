@@ -44,6 +44,7 @@ public class CarService {
 	private final CarRepository carRepository;
 	private final ClientRepository clientRepository;
 	private final PartnerRepository partnerRepository;
+	private final PartnerService partnerService;
 
 	/**
 	 * Creates the service with its collaborating repositories.
@@ -52,14 +53,18 @@ public class CarService {
 	 * @param clientRepository persistence for {@link Client}, needed to keep {@code
 	 *     purchases_count} in sync on sale/reversal (requirement 4)
 	 * @param partnerRepository persistence for the consignment partner a car may reference
+	 * @param partnerService keeps a consignment partner's {@code cars_count}/{@code
+	 *     total_commission} in sync on car creation/deletion/sale (TASK-009, requirement 5)
 	 */
 	public CarService(
 			CarRepository carRepository,
 			ClientRepository clientRepository,
-			PartnerRepository partnerRepository) {
+			PartnerRepository partnerRepository,
+			PartnerService partnerService) {
 		this.carRepository = carRepository;
 		this.clientRepository = clientRepository;
 		this.partnerRepository = partnerRepository;
+		this.partnerService = partnerService;
 	}
 
 	/**
@@ -93,7 +98,9 @@ public class CarService {
 	}
 
 	/**
-	 * Creates a new car.
+	 * Creates a new car. When the car is a consignment car for a partner ({@code isConsignacao}
+	 * {@code true} with a {@code partnerId}), increments that partner's {@code cars_count} within
+	 * the same transaction (TASK-009, requirement 5).
 	 *
 	 * @param request the validated payload
 	 * @return the created car
@@ -104,7 +111,11 @@ public class CarService {
 	public CarResponse create(CarRequest request) {
 		Car car = new Car();
 		applyRequest(car, request);
-		return CarResponse.from(carRepository.save(car));
+		Car saved = carRepository.save(car);
+		if (saved.isConsignacao() && saved.getPartner() != null) {
+			partnerService.registerConsignmentCarCreated(saved.getPartner());
+		}
+		return CarResponse.from(saved);
 	}
 
 	/**
@@ -126,20 +137,27 @@ public class CarService {
 
 	/**
 	 * Deletes a car and its photos ({@code car_images} cascades by {@link Car#removeImage}/JPA
-	 * cascade).
+	 * cascade). When the car is a consignment car for a partner, decrements that partner's {@code
+	 * cars_count} within the same transaction (TASK-009, requirement 5).
 	 *
 	 * @param id the car's id
 	 * @throws ResourceNotFoundException if no car has this id (mapped to 404)
 	 */
 	@Transactional
 	public void delete(UUID id) {
-		carRepository.delete(findOrThrow(id));
+		Car car = findOrThrow(id);
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.registerConsignmentCarDeleted(car.getPartner());
+		}
+		carRepository.delete(car);
 	}
 
 	/**
 	 * Marks a car as sold, equivalent to {@code sellCar} in {@code
 	 * dcbo/src/services/firebaseService.js:148}, and — within the same transaction (requirement 4)
-	 * — increments the buying client's {@code purchases_count} when a client is given.
+	 * — increments the buying client's {@code purchases_count} when a client is given, plus (TASK-009,
+	 * requirement 5) the consignment partner's {@code total_commission} by {@link
+	 * Car#getCommissionValue()} when the car is a consignment car.
 	 *
 	 * <p>Only a car that is not currently marked as sold may be sold: the {@code dcbo} frontend
 	 * only ever offers the "sell" action from the list of available cars ({@code
@@ -167,13 +185,18 @@ public class CarService {
 		car.setPrecoVenda(request.precoVenda());
 		car.setDataVenda(OffsetDateTime.now());
 		car.setClient(request.clienteId() != null ? incrementAndGetClient(request.clienteId()) : null);
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.registerCommission(car.getPartner(), car.getCommissionValue());
+		}
 		return CarResponse.from(car);
 	}
 
 	/**
 	 * Reverts a sale, equivalent to {@code revertCarSale} in {@code
 	 * dcbo/src/services/firebaseService.js:179}, decrementing the previously-associated client's
-	 * {@code purchases_count} within the same transaction (requirement 4).
+	 * {@code purchases_count} within the same transaction (requirement 4), plus — ASSUNÇÃO, see
+	 * {@link PartnerService#reverseCommission} — the consignment partner's {@code total_commission}
+	 * back out by the same amount {@link #sell} added, when the car is a consignment car.
 	 *
 	 * @param id the car's id
 	 * @return the updated car
@@ -184,6 +207,9 @@ public class CarService {
 		Car car = findOrThrow(id);
 		if (car.getClient() != null) {
 			decrementPurchases(car.getClient());
+		}
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.reverseCommission(car.getPartner(), car.getCommissionValue());
 		}
 		car.setVendido(false);
 		car.setPrecoVenda(null);
