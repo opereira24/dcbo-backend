@@ -25,6 +25,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import pt.diamondcars.dcbobackend.web.dto.ApiError;
 import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
+import pt.diamondcars.dcbobackend.web.exception.ResourceInUseException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
 
 /**
@@ -77,6 +78,21 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(CarAlreadySoldException.class)
 	public ResponseEntity<ApiError> handleAlreadySold(
 			CarAlreadySoldException exception, HttpServletRequest request) {
+		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link ResourceInUseException} (deleting a client/partner that still has cars
+	 * referencing it) to 409 (TASK-009, requirement 6: the conflict mapping this class's Javadoc
+	 * already anticipated TASK-009 to TASK-012 would need).
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(ResourceInUseException.class)
+	public ResponseEntity<ApiError> handleResourceInUse(
+			ResourceInUseException exception, HttpServletRequest request) {
 		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
 	}
 

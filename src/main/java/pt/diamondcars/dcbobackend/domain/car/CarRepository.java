@@ -44,4 +44,45 @@ public interface CarRepository extends JpaRepository<Car, UUID>, JpaSpecificatio
 	 * @return the number of cars with {@code destaque = true}
 	 */
 	long countByDestaqueTrue();
+
+	/**
+	 * Lists cars purchased by a given client, most recently created first — backs {@code
+	 * GET /api/clients/{id}/cars} (TASK-009, requirement 1), which supports the modal {@code
+	 * dcbo/src/components/client-cars-modal.js}.
+	 *
+	 * @param clientId the {@link pt.diamondcars.dcbobackend.domain.client.Client} id to filter by
+	 * @return cars whose {@code client_id} equals {@code clientId}, ordered by {@code createdAt}
+	 *     descending
+	 */
+	List<Car> findByClientIdOrderByCreatedAtDesc(UUID clientId);
+
+	/**
+	 * Tests whether any car references a given client, used by {@code ClientService} to refuse
+	 * deleting a client that has purchased cars (TASK-009, requirement 1) instead of deleting it
+	 * silently.
+	 *
+	 * @param clientId the {@link pt.diamondcars.dcbobackend.domain.client.Client} id to check
+	 * @return {@code true} if at least one car has this {@code client_id}
+	 */
+	boolean existsByClientId(UUID clientId);
+
+	/**
+	 * Lists cars in consignment for a given partner, most recently created first — backs {@code
+	 * GET /api/partners/{id}/cars} (TASK-009, requirement 4).
+	 *
+	 * @param partnerId the {@link pt.diamondcars.dcbobackend.domain.partner.Partner} id to filter by
+	 * @return cars whose {@code partner_id} equals {@code partnerId}, ordered by {@code createdAt}
+	 *     descending
+	 */
+	List<Car> findByPartnerIdOrderByCreatedAtDesc(UUID partnerId);
+
+	/**
+	 * Tests whether any car references a given partner, used by {@code PartnerService} to refuse
+	 * deleting a partner that has consignment cars (TASK-009, requirement 4) instead of deleting it
+	 * silently.
+	 *
+	 * @param partnerId the {@link pt.diamondcars.dcbobackend.domain.partner.Partner} id to check
+	 * @return {@code true} if at least one car has this {@code partner_id}
+	 */
+	boolean existsByPartnerId(UUID partnerId);
 }

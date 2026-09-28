@@ -14,9 +14,9 @@ import pt.diamondcars.dcbobackend.domain.support.AbstractAuditableDomainEntity;
 /**
  * A customer of the back-office, mapped over the {@code clients} table of {@code V1__init.sql}.
  *
- * <p>{@link #purchasesCount} is a running total maintained by the service layer of later tasks
- * (equivalent to the increment/decrement in {@code dcbo/src/services/firebaseService.js:315,331})
- * — this entity only declares the persisted shape.
+ * <p>{@link #purchasesCount} is a running total maintained by {@code CarService} on car sale/
+ * reversal (TASK-008, requirement 4; equivalent to the increment/decrement in {@code
+ * dcbo/src/services/firebaseService.js:315,331}) — this entity only declares the persisted shape.
  */
 @Getter
 @Setter

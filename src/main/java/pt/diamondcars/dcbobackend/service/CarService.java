@@ -1,5 +1,6 @@
 package pt.diamondcars.dcbobackend.service;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +45,7 @@ public class CarService {
 	private final CarRepository carRepository;
 	private final ClientRepository clientRepository;
 	private final PartnerRepository partnerRepository;
+	private final PartnerService partnerService;
 
 	/**
 	 * Creates the service with its collaborating repositories.
@@ -52,14 +54,19 @@ public class CarService {
 	 * @param clientRepository persistence for {@link Client}, needed to keep {@code
 	 *     purchases_count} in sync on sale/reversal (requirement 4)
 	 * @param partnerRepository persistence for the consignment partner a car may reference
+	 * @param partnerService keeps a consignment partner's {@code cars_count}/{@code
+	 *     total_commission} in sync on a car's sale and the reversal of that sale (TASK-009,
+	 *     requirement 5 — see {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3)
 	 */
 	public CarService(
 			CarRepository carRepository,
 			ClientRepository clientRepository,
-			PartnerRepository partnerRepository) {
+			PartnerRepository partnerRepository,
+			PartnerService partnerService) {
 		this.carRepository = carRepository;
 		this.clientRepository = clientRepository;
 		this.partnerRepository = partnerRepository;
+		this.partnerService = partnerService;
 	}
 
 	/**
@@ -93,7 +100,10 @@ public class CarService {
 	}
 
 	/**
-	 * Creates a new car.
+	 * Creates a new car. Never touches {@link Partner#getCarsCount()}/{@link
+	 * Partner#getTotalCommission()}, even when the car is a consignment car for a partner: those
+	 * counters only change on sale/reversal, see {@link #sell}/{@link #revertSale} (TASK-009,
+	 * requirement 5 — {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3).
 	 *
 	 * @param request the validated payload
 	 * @return the created car
@@ -104,11 +114,22 @@ public class CarService {
 	public CarResponse create(CarRequest request) {
 		Car car = new Car();
 		applyRequest(car, request);
-		return CarResponse.from(carRepository.save(car));
+		Car saved = carRepository.save(car);
+		return CarResponse.from(saved);
 	}
 
 	/**
 	 * Updates an existing car, replacing every field (including its photos) with the given payload.
+	 *
+	 * <p>When the car is already sold ({@code vendido = true}), the consignment fields ({@code
+	 * isConsignacao}/{@code partnerId}/{@code commissionValue}) can still change — {@code dcbo}
+	 * shows "Editar" on sold cars too ({@code dcbo/src/pages/cars.js:548}, not gated by {@code
+	 * !car.vendido}) — so before applying the new values this reconciles the consignment partner's
+	 * {@code cars_count}/{@code total_commission} that the original sale registered: it reverses
+	 * them from whichever partner/commission the car had *before* the edit, then re-applies them to
+	 * whichever partner/commission it has *after*. Without this, {@link #revertSale} would later
+	 * undo the sale using the *current* (possibly different) partner/commission, corrupting one or
+	 * both partners' balances (TASK-009, {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 2).
 	 *
 	 * @param id the car's id
 	 * @param request the validated payload
@@ -120,26 +141,41 @@ public class CarService {
 	@Transactional
 	public CarResponse update(UUID id, CarRequest request) {
 		Car car = findOrThrow(id);
+		if (!car.isVendido()) {
+			applyRequest(car, request);
+			return CarResponse.from(car);
+		}
+		boolean previousConsignacao = car.isConsignacao();
+		Partner previousPartner = car.getPartner();
+		BigDecimal previousCommission = car.getCommissionValue();
 		applyRequest(car, request);
+		reconcileConsignmentSaleAfterEdit(previousConsignacao, previousPartner, previousCommission, car);
 		return CarResponse.from(car);
 	}
 
 	/**
 	 * Deletes a car and its photos ({@code car_images} cascades by {@link Car#removeImage}/JPA
-	 * cascade).
+	 * cascade). Never touches a consignment partner's {@code cars_count}/{@code total_commission}
+	 * (TASK-009, requirement 5 — see {@link #create}).
 	 *
 	 * @param id the car's id
 	 * @throws ResourceNotFoundException if no car has this id (mapped to 404)
 	 */
 	@Transactional
 	public void delete(UUID id) {
-		carRepository.delete(findOrThrow(id));
+		Car car = findOrThrow(id);
+		carRepository.delete(car);
 	}
 
 	/**
 	 * Marks a car as sold, equivalent to {@code sellCar} in {@code
 	 * dcbo/src/services/firebaseService.js:148}, and — within the same transaction (requirement 4)
-	 * — increments the buying client's {@code purchases_count} when a client is given.
+	 * — increments the buying client's {@code purchases_count} when a client is given, plus
+	 * (TASK-009, requirement 5) the consignment partner's {@code total_commission} by {@link
+	 * Car#getCommissionValue()} and {@code cars_count} by one, when the car is a consignment car —
+	 * mirroring {@code dcbo/src/App.js:350-351}, where {@code addPartnerCommission}/{@code
+	 * incrementPartnerCars} are called together, only from {@code sellCar} (TASK-009,
+	 * {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3).
 	 *
 	 * <p>Only a car that is not currently marked as sold may be sold: the {@code dcbo} frontend
 	 * only ever offers the "sell" action from the list of available cars ({@code
@@ -167,23 +203,45 @@ public class CarService {
 		car.setPrecoVenda(request.precoVenda());
 		car.setDataVenda(OffsetDateTime.now());
 		car.setClient(request.clienteId() != null ? incrementAndGetClient(request.clienteId()) : null);
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.registerCommission(car.getPartner(), car.getCommissionValue());
+			partnerService.incrementCarsCount(car.getPartner());
+		}
 		return CarResponse.from(car);
 	}
 
 	/**
 	 * Reverts a sale, equivalent to {@code revertCarSale} in {@code
 	 * dcbo/src/services/firebaseService.js:179}, decrementing the previously-associated client's
-	 * {@code purchases_count} within the same transaction (requirement 4).
+	 * {@code purchases_count} within the same transaction (requirement 4), plus — ASSUNÇÃO, see
+	 * {@link PartnerService#reverseCommission} — the consignment partner's {@code total_commission}
+	 * and {@code cars_count} back out by what {@link #sell} added, when the car is a consignment
+	 * car.
+	 *
+	 * <p>A car that is not currently marked as sold is left completely untouched (a total no-op,
+	 * still returning 200): {@code backlog/reviews/TASK-008-r2.md}, D3 already established this
+	 * endpoint is idempotent when called on a never-sold car, but before this guard the partner
+	 * side-effect below ran unconditionally, silently discounting a consignment partner's {@code
+	 * total_commission}/{@code cars_count} for a sale that never happened — including a second call
+	 * on an already-reverted car, corrupting real money (TASK-009,
+	 * {@code backlog/reviews/TASK-009-r1.md}, BLOQUEADOR 1).
 	 *
 	 * @param id the car's id
-	 * @return the updated car
+	 * @return the updated car, unchanged if it was not marked as sold
 	 * @throws ResourceNotFoundException if no car has this id (mapped to 404)
 	 */
 	@Transactional
 	public CarResponse revertSale(UUID id) {
 		Car car = findOrThrow(id);
+		if (!car.isVendido()) {
+			return CarResponse.from(car);
+		}
 		if (car.getClient() != null) {
 			decrementPurchases(car.getClient());
+		}
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.reverseCommission(car.getPartner(), car.getCommissionValue());
+			partnerService.decrementCarsCount(car.getPartner());
 		}
 		car.setVendido(false);
 		car.setPrecoVenda(null);
@@ -257,6 +315,32 @@ public class CarService {
 
 	private void decrementPurchases(Client client) {
 		client.setPurchasesCount(Math.max(0, client.getPurchasesCount() - 1));
+	}
+
+	/**
+	 * Moves a sold car's registered commission/{@code cars_count} from the partner/commission it
+	 * had before an edit to the partner/commission it has after, so that a later {@link
+	 * #revertSale} — which always reverses using the car's *current* values — undoes exactly what
+	 * was actually registered, on whichever partner it was registered on. A no-op on either side
+	 * when that side was not (or is no longer) a consignment car with a partner (TASK-009,
+	 * {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 2).
+	 *
+	 * @param previousConsignacao whether the car was a consignment car before the edit just applied
+	 * @param previousPartner the partner the car referenced before the edit, or {@code null}
+	 * @param previousCommission the commission value the car had before the edit, or {@code null}
+	 * @param car the car after the edit has already been applied, used to read its new consignment
+	 *     state
+	 */
+	private void reconcileConsignmentSaleAfterEdit(
+			boolean previousConsignacao, Partner previousPartner, BigDecimal previousCommission, Car car) {
+		if (previousConsignacao && previousPartner != null) {
+			partnerService.reverseCommission(previousPartner, previousCommission);
+			partnerService.decrementCarsCount(previousPartner);
+		}
+		if (car.isConsignacao() && car.getPartner() != null) {
+			partnerService.registerCommission(car.getPartner(), car.getCommissionValue());
+			partnerService.incrementCarsCount(car.getPartner());
+		}
 	}
 
 	private void applyRequest(Car car, CarRequest request) {

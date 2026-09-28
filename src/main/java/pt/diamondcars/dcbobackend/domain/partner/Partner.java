@@ -17,11 +17,13 @@ import pt.diamondcars.dcbobackend.domain.support.AbstractAuditableDomainEntity;
  * {@code V1__init.sql}. Partners supply cars sold on consignment ({@code cars.is_consignacao}) and
  * accrue a running commission balance ({@link #totalCommission}) as those cars sell.
  *
- * <p>{@link #carsCount} and {@link #totalCommission} are running totals maintained by the service
- * layer of later tasks (equivalent to {@code incrementPartnerCars}/{@code
- * addPartnerCommission} in {@code dcbo/src/services/firebaseService.js}) — this entity only
- * declares the persisted shape, not the increment/decrement logic (out of scope, see TASK-006
- * Scope).
+ * <p>{@link #carsCount} and {@link #totalCommission} are running totals maintained by {@code
+ * PartnerService}, called from {@code CarService} when a consignment car is sold or a sale is
+ * reverted — never on car creation or deletion (TASK-009, requirement 5; conceptually equivalent
+ * to {@code incrementPartnerCars}/{@code addPartnerCommission} in {@code
+ * dcbo/src/services/firebaseService.js}, though this task derives them server-side from car
+ * lifecycle events rather than from ad-hoc browser calls) — this entity only declares the
+ * persisted shape, not the increment/decrement logic.
  */
 @Getter
 @Setter
