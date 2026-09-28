@@ -217,13 +217,14 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
-	 * Requirement 5: creating a consignment car referencing a partner increments that partner's
-	 * {@code cars_count}, within the same transaction as {@code POST /api/cars}.
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-009-r1.md}): {@code cars_count} only changes on a
+	 * sale, mirroring {@code dcbo/src/App.js:351} ({@code incrementPartnerCars} is only ever called
+	 * from inside {@code sellCar}) — creating a consignment car must not touch it.
 	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}
 	 */
 	@Test
-	void creatingAConsignmentCarIncrementsThePartnersCarsCount() throws Exception {
+	void creatingAConsignmentCarDoesNotChangeThePartnersCarsCount() throws Exception {
 		Partner partner = partnerRepository.saveAndFlush(Partner.builder().name("Parceiro A").build());
 
 		mockMvc
@@ -239,19 +240,20 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 						get("/api/partners/{id}", partner.getId())
 								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.carsCount").value(1));
+				.andExpect(jsonPath("$.carsCount").value(0));
 	}
 
 	/**
-	 * Counterpart of {@link #creatingAConsignmentCarIncrementsThePartnersCarsCount()}: deleting that
-	 * consignment car decrements {@code cars_count} back down.
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-009-r1.md}): counterpart of {@link
+	 * #creatingAConsignmentCarDoesNotChangeThePartnersCarsCount()} — deleting an unsold consignment
+	 * car must not touch {@code cars_count} either.
 	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}
 	 */
 	@Test
-	void deletingAConsignmentCarDecrementsThePartnersCarsCount() throws Exception {
+	void deletingAnUnsoldConsignmentCarDoesNotChangeThePartnersCarsCount() throws Exception {
 		Partner partner =
-				partnerRepository.saveAndFlush(Partner.builder().name("Parceiro B").carsCount(1).build());
+				partnerRepository.saveAndFlush(Partner.builder().name("Parceiro B").carsCount(3).build());
 		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partner).build());
 
 		mockMvc
@@ -265,18 +267,19 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 						get("/api/partners/{id}", partner.getId())
 								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.carsCount").value(0));
+				.andExpect(jsonPath("$.carsCount").value(3));
 	}
 
 	/**
-	 * Acceptance criterion 4: selling a consignment car increments the partner's {@code
-	 * total_commission} by the car's {@code commissionValue}, within the same transaction as
-	 * {@code POST /api/cars/{id}/sell}.
+	 * Acceptance criterion 4 / IMPORTANTE 3 ({@code backlog/reviews/TASK-009-r1.md}): selling a
+	 * consignment car increments the partner's {@code total_commission} by the car's {@code
+	 * commissionValue} <em>and</em> {@code cars_count} by one, within the same transaction as
+	 * {@code POST /api/cars/{id}/sell}; reverting the sale brings both back down.
 	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}
 	 */
 	@Test
-	void sellingAConsignmentCarIncrementsThePartnersTotalCommission() throws Exception {
+	void sellingAConsignmentCarIncrementsThePartnersTotalCommissionAndCarsCount() throws Exception {
 		Partner partner = partnerRepository.saveAndFlush(Partner.builder().name("Parceiro C").build());
 		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partner).build());
 		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), null);
@@ -289,8 +292,9 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 								.content(objectMapper.writeValueAsString(sellRequest)))
 				.andExpect(status().isOk());
 
-		assertThat(partnerRepository.findById(partner.getId()).orElseThrow().getTotalCommission())
-				.isEqualByComparingTo(new BigDecimal("500.00"));
+		Partner afterSale = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterSale.getTotalCommission()).isEqualByComparingTo(new BigDecimal("500.00"));
+		assertThat(afterSale.getCarsCount()).isEqualTo(1);
 
 		mockMvc
 				.perform(
@@ -298,8 +302,200 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
 				.andExpect(status().isOk());
 
-		assertThat(partnerRepository.findById(partner.getId()).orElseThrow().getTotalCommission())
+		Partner afterRevert = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterRevert.getTotalCommission()).isEqualByComparingTo(BigDecimal.ZERO);
+		assertThat(afterRevert.getCarsCount()).isEqualTo(0);
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-009-r1.md}): {@code revert-sale} on a consignment
+	 * car that was never sold must be a total no-op — in particular it must never discount the
+	 * partner's {@code total_commission}/{@code cars_count}, which before this fix happened
+	 * unconditionally.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void revertingASaleOnANeverSoldConsignmentCarLeavesThePartnersCountersUntouched() throws Exception {
+		Partner partner =
+				partnerRepository.saveAndFlush(
+						Partner.builder()
+								.name("Parceiro H")
+								.carsCount(3)
+								.totalCommission(new BigDecimal("1500.00"))
+								.build());
+		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partner).build());
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
+
+		Partner reloaded = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(reloaded.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1500.00"));
+		assertThat(reloaded.getCarsCount()).isEqualTo(3);
+	}
+
+	/**
+	 * BLOQUEADOR 1 ({@code backlog/reviews/TASK-009-r1.md}): calling {@code revert-sale} a second
+	 * time on a car whose sale was already reverted must not discount the partner's {@code
+	 * total_commission}/{@code cars_count} again — measured by the reviewer as a real double
+	 * discount (1500 -> 1100 -> 100 on two reverts of the same sale).
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void revertingAnAlreadyRevertedSaleDoesNotDiscountThePartnersCountersAgain() throws Exception {
+		Partner partner =
+				partnerRepository.saveAndFlush(
+						Partner.builder()
+								.name("Parceiro I")
+								.carsCount(2)
+								.totalCommission(new BigDecimal("1000.00"))
+								.build());
+		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partner).build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), null);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+
+		Partner afterSale = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterSale.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1500.00"));
+		assertThat(afterSale.getCarsCount()).isEqualTo(3);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
+
+		Partner afterFirstRevert = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterFirstRevert.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1000.00"));
+		assertThat(afterFirstRevert.getCarsCount()).isEqualTo(2);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
+
+		Partner afterSecondRevert = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterSecondRevert.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1000.00"));
+		assertThat(afterSecondRevert.getCarsCount()).isEqualTo(2);
+	}
+
+	/**
+	 * IMPORTANTE 2 ({@code backlog/reviews/TASK-009-r1.md}): editing a <em>sold</em> consignment
+	 * car's {@code partnerId} via {@code PUT /api/cars/{id}} must move the registered commission
+	 * from the old partner to the new one, so that a later {@code revert-sale} undoes it from the
+	 * right place instead of leaving it stuck on the original partner forever.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void editingASoldConsignmentCarsPartnerMovesTheCommissionToTheNewPartner() throws Exception {
+		Partner partnerA = partnerRepository.saveAndFlush(Partner.builder().name("Parceiro J").build());
+		Partner partnerB = partnerRepository.saveAndFlush(Partner.builder().name("Parceiro K").build());
+		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partnerA).build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), null);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+		assertThat(partnerRepository.findById(partnerA.getId()).orElseThrow().getTotalCommission())
+				.isEqualByComparingTo(new BigDecimal("500.00"));
+
+		mockMvc
+				.perform(
+						put("/api/cars/{id}", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(consignmentCarRequestFor(partnerB.getId()))))
+				.andExpect(status().isOk());
+
+		assertThat(partnerRepository.findById(partnerA.getId()).orElseThrow().getTotalCommission())
 				.isEqualByComparingTo(BigDecimal.ZERO);
+		assertThat(partnerRepository.findById(partnerA.getId()).orElseThrow().getCarsCount()).isEqualTo(0);
+		assertThat(partnerRepository.findById(partnerB.getId()).orElseThrow().getTotalCommission())
+				.isEqualByComparingTo(new BigDecimal("500.00"));
+		assertThat(partnerRepository.findById(partnerB.getId()).orElseThrow().getCarsCount()).isEqualTo(1);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
+
+		assertThat(partnerRepository.findById(partnerB.getId()).orElseThrow().getTotalCommission())
+				.isEqualByComparingTo(BigDecimal.ZERO);
+		assertThat(partnerRepository.findById(partnerB.getId()).orElseThrow().getCarsCount()).isEqualTo(0);
+		assertThat(partnerRepository.findById(partnerA.getId()).orElseThrow().getTotalCommission())
+				.isEqualByComparingTo(BigDecimal.ZERO);
+	}
+
+	/**
+	 * IMPORTANTE 4 ({@code backlog/reviews/TASK-009-r1.md}): phone numbers with spaces that the
+	 * {@code dcbo} partner form accepts today (it strips spaces before validating, {@code
+	 * partners.js:61}) must not be rejected with 400 here.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void acceptsAPartnerPhoneWithSpacesLikeTheDcboFormDoes() throws Exception {
+		PartnerRequest valid = validPartnerRequest();
+		PartnerRequest spacedLocal =
+				new PartnerRequest(valid.name(), valid.email(), "912 345 678", valid.notes());
+		PartnerRequest spacedInternational =
+				new PartnerRequest(valid.name(), valid.email(), "+351 912 345 678", valid.notes());
+
+		mockMvc
+				.perform(
+						post("/api/partners")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(spacedLocal)))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.phone").value("912345678"));
+
+		mockMvc
+				.perform(
+						post("/api/partners")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(spacedInternational)))
+				.andExpect(status().isCreated())
+				.andExpect(jsonPath("$.phone").value("+351912345678"));
+	}
+
+	/**
+	 * Counterpart of {@link #acceptsAPartnerPhoneWithSpacesLikeTheDcboFormDoes()}: a phone that does
+	 * not match {@code PHONE_PT} even with spaces stripped is still rejected with 400.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsAPartnerPhoneThatIsInvalidEvenWithoutSpaces() throws Exception {
+		PartnerRequest valid = validPartnerRequest();
+		PartnerRequest invalid = new PartnerRequest(valid.name(), valid.email(), "812345678", valid.notes());
+
+		mockMvc
+				.perform(
+						post("/api/partners")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(invalid)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("phone")));
 	}
 
 	/**

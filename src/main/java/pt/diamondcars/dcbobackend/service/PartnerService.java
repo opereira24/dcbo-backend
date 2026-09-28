@@ -19,10 +19,16 @@ import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
 /**
  * Business logic for the whole {@code /api/partners} surface (TASK-009), functionally equivalent
  * to the partner-related exports of {@code dcbo/src/services/firebaseService.js} the requirements
- * list, plus the {@link #registerConsignmentCarCreated}/{@link #registerConsignmentCarDeleted}/
- * {@link #registerCommission}/{@link #reverseCommission} hooks {@code CarService} calls to keep
- * {@link Partner#getCarsCount()}/{@link Partner#getTotalCommission()} in sync server-side
- * (requirement 5), replacing the ad-hoc increments the browser used to perform on its own.
+ * list, plus the {@link #incrementCarsCount}/{@link #decrementCarsCount}/{@link #registerCommission}/
+ * {@link #reverseCommission} hooks {@code CarService} calls to keep {@link Partner#getCarsCount()}/
+ * {@link Partner#getTotalCommission()} in sync server-side (requirement 5), replacing the ad-hoc
+ * increments the browser used to perform on its own.
+ *
+ * <p>Both counters are only ever touched by a sale and its reversal ({@code CarService#sell}/
+ * {@code CarService#revertSale}), never by a car's creation, update, or deletion: {@code
+ * dcbo/src/App.js:350-351} only ever calls {@code incrementPartnerCars}/{@code
+ * addPartnerCommission} together, from inside {@code sellCar} — see {@code
+ * backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3.
  *
  * <p>Every public method is {@code @Transactional} and maps its result to a {@link
  * PartnerResponse}/{@link CarResponse} before returning, mirroring {@code CarService}'s reasoning:
@@ -134,25 +140,29 @@ public class PartnerService {
 	}
 
 	/**
-	 * Increments {@link Partner#getCarsCount()} by one, called by {@code CarService} when a new
-	 * consignment car referencing this partner is created (requirement 5).
+	 * Increments {@link Partner#getCarsCount()} by one, called by {@code CarService} when a
+	 * consignment car referencing this partner is sold (requirement 5) — mirroring {@code
+	 * dcbo/src/App.js:351}, the only place the browser calls {@code incrementPartnerCars}, always
+	 * right after {@code addPartnerCommission} inside {@code sellCar}.
 	 *
 	 * @param partner the partner to update, managed by the caller's persistence context; the
 	 *     mutation is flushed by Hibernate's dirty checking at commit, no explicit save needed
 	 */
 	@Transactional
-	public void registerConsignmentCarCreated(Partner partner) {
+	public void incrementCarsCount(Partner partner) {
 		partner.setCarsCount(partner.getCarsCount() + 1);
 	}
 
 	/**
 	 * Decrements {@link Partner#getCarsCount()} by one (never below zero), called by {@code
-	 * CarService} when a consignment car referencing this partner is deleted (requirement 5).
+	 * CarService} when a consignment car's sale is reverted (the counterpart of {@link
+	 * #incrementCarsCount}), or when an already-sold consignment car is re-assigned to a different
+	 * partner via {@code PUT /api/cars/{id}} (see {@code CarService#update}).
 	 *
 	 * @param partner the partner to update, managed by the caller's persistence context
 	 */
 	@Transactional
-	public void registerConsignmentCarDeleted(Partner partner) {
+	public void decrementCarsCount(Partner partner) {
 		partner.setCarsCount(Math.max(0, partner.getCarsCount() - 1));
 	}
 
