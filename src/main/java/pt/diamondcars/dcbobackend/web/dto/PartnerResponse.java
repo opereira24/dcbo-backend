@@ -22,9 +22,11 @@ import pt.diamondcars.dcbobackend.domain.partner.Partner;
  * @param email email address, or {@code null}/blank if not given
  * @param phone phone number, or {@code null}/blank if not given
  * @param notes free-text notes, or {@code null}/blank if not given
- * @param carsCount number of consignment cars currently attributed to this partner, incremented
- *     when a consignment car referencing this partner is created and decremented when one is
- *     deleted ({@code CarService}, TASK-009 requirement 5)
+ * @param carsCount number of consignment cars of this partner sold and not reverted, incremented
+ *     when a consignment car is sold ({@code CarService#sell}), decremented when that sale is
+ *     reverted ({@code CarService#revertSale}), and moved between partners when a sold
+ *     consignment car is re-assigned via {@code PUT} ({@code CarService#update}); never touched
+ *     by car creation or deletion ({@code CarService}, TASK-009 requirement 5)
  * @param totalCommission running total commission owed to this partner, incremented by a car's
  *     {@code commissionValue} when it is sold and decremented back when that sale is reverted
  * @param createdAt creation timestamp

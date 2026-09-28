@@ -444,6 +444,89 @@ class PartnerControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
+	 * IMPORTANTE B ({@code backlog/reviews/TASK-009-r2.md}): editing only the {@code
+	 * commissionValue} of an already-sold consignment car (partner unchanged) must reverse the
+	 * partner's <em>old</em> commission and register the <em>new</em> one, not the other way
+	 * around. A non-zero prior balance (simulating earlier, unrelated sales) is what makes this
+	 * observable: {@code reconcileConsignmentSaleAfterEdit} reversing with {@code
+	 * car.getCommissionValue()} (the new value) instead of the previously-registered one would
+	 * still pass with a zero starting balance (the {@code max(0)} clamp hides it), but would leave
+	 * the partner permanently short here — 1000 (prior) + 500 (sale) -> PUT to 800 -> 1800, then
+	 * {@code revert-sale} must land back on exactly 1000, not 1300 or any other value.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void editingOnlyTheCommissionValueOfASoldConsignmentCarReconciliesAgainstThePreviousValue()
+			throws Exception {
+		Partner partner =
+				partnerRepository.saveAndFlush(
+						Partner.builder()
+								.name("Parceiro L")
+								.carsCount(2)
+								.totalCommission(new BigDecimal("1000.00"))
+								.build());
+		Car car = carRepository.saveAndFlush(aConsignmentCarFor(partner).build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), null);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+
+		Partner afterSale = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterSale.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1500.00"));
+		assertThat(afterSale.getCarsCount()).isEqualTo(3);
+
+		CarRequest changedCommissionOnly =
+				new CarRequest(
+						"Audi",
+						"A4",
+						2019,
+						new BigDecimal("22000.00"),
+						80000,
+						"Branco",
+						"Gasolina",
+						"Manual",
+						"stand",
+						null,
+						null,
+						null,
+						true,
+						partner.getId(),
+						new BigDecimal("800.00"),
+						0,
+						false,
+						null,
+						null);
+
+		mockMvc
+				.perform(
+						put("/api/cars/{id}", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(changedCommissionOnly)))
+				.andExpect(status().isOk());
+
+		Partner afterEdit = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterEdit.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1800.00"));
+		assertThat(afterEdit.getCarsCount()).isEqualTo(3);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
+
+		Partner afterRevert = partnerRepository.findById(partner.getId()).orElseThrow();
+		assertThat(afterRevert.getTotalCommission()).isEqualByComparingTo(new BigDecimal("1000.00"));
+		assertThat(afterRevert.getCarsCount()).isEqualTo(2);
+	}
+
+	/**
 	 * IMPORTANTE 4 ({@code backlog/reviews/TASK-009-r1.md}): phone numbers with spaces that the
 	 * {@code dcbo} partner form accepts today (it strips spaces before validating, {@code
 	 * partners.js:61}) must not be rejected with 400 here.
