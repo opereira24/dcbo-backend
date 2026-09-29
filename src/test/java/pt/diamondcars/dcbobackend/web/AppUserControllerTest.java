@@ -15,14 +15,20 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import tools.jackson.databind.ObjectMapper;
+import java.util.UUID;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import pt.diamondcars.dcbobackend.domain.user.AppUser;
 import pt.diamondcars.dcbobackend.domain.user.AppUserRepository;
 import pt.diamondcars.dcbobackend.domain.user.AppUserRole;
@@ -101,6 +107,89 @@ class AppUserControllerTest extends AbstractPostgresIntegrationTest {
 		mockMvc
 				.perform(get("/api/users").with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
 				.andExpect(status().isForbidden());
+	}
+
+	/**
+	 * Regression test for {@code backlog/reviews/TASK-012-r1.md}, IMPORTANTE 1: the reviewer
+	 * confirmed by mutation that {@code @PreAuthorize("hasRole('ADMIN')")} was only exercised on
+	 * {@code GET /api/users} — swapping it for {@code hasRole('ADMIN') or hasRole('USER')} on the
+	 * other 5 methods left all 13 tests green. Exercises all 6 {@code /api/users} endpoints (plus a
+	 * {@code DELETE} of a non-existent id, per the reviewer's explicit request, to confirm
+	 * role-checking happens before the existence check and never turns into a 404) with a {@code
+	 * ROLE_USER} JWT, asserting 403 and that the target profile's state never changed.
+	 *
+	 * @param description human-readable label for the parameterized case, shown in the test report
+	 * @param httpMethod the HTTP method of the endpoint under test
+	 * @param pathTemplate the request path, with {@code %s} standing in for the target id where the
+	 *     endpoint has one
+	 * @param body the JSON request body to send, or {@code null} for methods that do not take one
+	 * @param targetsNonExistentId when {@code true}, the path is built with a random id that has no
+	 *     matching profile, instead of the seeded target's id
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@ParameterizedTest(name = "{0}")
+	@MethodSource("adminOnlyEndpoints")
+	void nonAdminCallingAnyUsersEndpointReturns403(
+			String description,
+			String httpMethod,
+			String pathTemplate,
+			String body,
+			boolean targetsNonExistentId)
+			throws Exception {
+		AppUser target = anAppUser("auth0|role-check-target", AppUserRole.USER, true);
+		UUID id = targetsNonExistentId ? UUID.randomUUID() : target.getId();
+		String path = String.format(pathTemplate, id);
+
+		MockHttpServletRequestBuilder request =
+				switch (httpMethod) {
+					case "GET" -> get(path);
+					case "POST" -> post(path);
+					case "PUT" -> put(path);
+					case "PATCH" -> patch(path);
+					case "DELETE" -> delete(path);
+					default -> throw new IllegalStateException("Metodo nao suportado: " + httpMethod);
+				};
+		if (body != null) {
+			request = request.contentType(MediaType.APPLICATION_JSON).content(body);
+		}
+
+		mockMvc
+				.perform(request.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isForbidden());
+
+		AppUser unchanged = appUserRepository.findById(target.getId()).orElseThrow();
+		assertThat(unchanged.getName()).isEqualTo(target.getName());
+		assertThat(unchanged.getRole()).isEqualTo(target.getRole());
+		assertThat(unchanged.isActive()).isTrue();
+		assertThat(appUserRepository.count()).isEqualTo(1);
+	}
+
+	private static Stream<Arguments> adminOnlyEndpoints() {
+		return Stream.of(
+				Arguments.of("GET /api/users", "GET", "/api/users", null, false),
+				Arguments.of("GET /api/users/{id}", "GET", "/api/users/%s", null, false),
+				Arguments.of(
+						"POST /api/users",
+						"POST",
+						"/api/users",
+						"{\"authSubject\":\"auth0|role-check-post\",\"email\":\"role-check@diamondcars.pt\","
+								+ "\"name\":\"Role Check\",\"role\":\"user\"}",
+						false),
+				Arguments.of(
+						"PUT /api/users/{id}",
+						"PUT",
+						"/api/users/%s",
+						"{\"name\":\"Nome Alterado\",\"role\":\"admin\"}",
+						false),
+				Arguments.of(
+						"PATCH /api/users/{id}/active",
+						"PATCH",
+						"/api/users/%s/active",
+						"{\"active\":false}",
+						false),
+				Arguments.of("DELETE /api/users/{id}", "DELETE", "/api/users/%s", null, false),
+				Arguments.of(
+						"DELETE /api/users/{uuid-inexistente}", "DELETE", "/api/users/%s", null, true));
 	}
 
 	/**
