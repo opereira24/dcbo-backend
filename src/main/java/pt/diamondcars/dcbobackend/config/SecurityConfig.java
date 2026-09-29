@@ -10,6 +10,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -19,10 +20,15 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  *
  * <p>Establishes the two rules every other task builds on top of (see {@code
  * backlog/tasks/TASK-007.md}, Overlap Conhecido): {@code /actuator/health} and {@code
- * /actuator/info} are public, everything else requires a valid Auth0-issued JWT. TASK-008 to
- * TASK-012 (business endpoints) must never edit this class to narrow or widen access further —
- * role-specific rules belong in {@code @PreAuthorize} on the controller method, which {@link
- * EnableMethodSecurity} below makes available.
+ * /actuator/info} are public, everything else requires a valid Auth0-issued JWT. TASK-008,
+ * TASK-009, TASK-011 and TASK-012 (business endpoints under {@code /api/**}) must never edit this
+ * class to narrow or widen access further — role-specific rules belong in {@code @PreAuthorize} on
+ * the controller method, which {@link EnableMethodSecurity} below makes available. TASK-010 is the
+ * one deliberate exception: it adds the {@code /internal/**} rule below for {@code
+ * InternalLeadController}, a path that is not a back-office endpoint at all (it is called by
+ * {@code catalog-backend}, not a browser session), so it is authenticated by {@link
+ * InternalTokenFilter} instead of a JWT, and explicitly {@code permitAll()} here so Spring
+ * Security's JWT processing never runs for it.
  *
  * <p>Audience validation of the JWT (a token issued for a different Auth0 API must be rejected)
  * is not implemented here: it is Spring Boot's own {@code
@@ -43,20 +49,35 @@ public class SecurityConfig {
 		"/actuator/health", "/actuator/health/**", "/actuator/info"
 	};
 
+	/**
+	 * {@code /internal/**} is permitted here (not authenticated via JWT) because {@link
+	 * InternalTokenFilter}, added below ahead of Spring Security's own authentication filters,
+	 * already rejects with 401 any request under this prefix that does not present the shared
+	 * {@code CATALOG_SYNC_TOKEN} (TASK-010, requirement 2) — by the time {@code
+	 * authorizeHttpRequests} evaluates this rule, the request has already been authenticated by that
+	 * filter (or the request never reaches this far).
+	 */
+	private static final String INTERNAL_PATH_PATTERN = "/internal/**";
+
 	private static final List<String> ALLOWED_METHODS =
 			List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
 
 	/**
 	 * Builds the single {@link SecurityFilterChain} of this resource server: stateless, CSRF-free
 	 * (there is no browser session, only bearer tokens from the SPA), CORS-enabled for the
-	 * configured `dcbo` origin(s), public actuator health/info, everything else authenticated via
-	 * JWT.
+	 * configured `dcbo` origin(s), public actuator health/info, {@code /internal/**} guarded by
+	 * {@link InternalTokenFilter} instead of a JWT (TASK-010, requirement 2), everything else
+	 * authenticated via JWT.
 	 *
 	 * @param http the {@link HttpSecurity} builder Spring Security provides
 	 * @param jwtAuthenticationConverter converts a validated JWT into an {@link
 	 *     org.springframework.security.core.Authentication} carrying the back-office roles as
 	 *     authorities
 	 * @param corsConfigurationSource the allowed-origins/methods/headers CORS policy
+	 * @param internalTokenFilter guards {@code /internal/**} with the shared {@code
+	 *     CATALOG_SYNC_TOKEN} secret, registered ahead of where {@link
+	 *     UsernamePasswordAuthenticationFilter} would sit in the standard filter order so it runs,
+	 *     and can short-circuit with 401, before the JWT resource-server filters below do
 	 * @return the configured filter chain
 	 * @throws Exception propagated from {@link HttpSecurity#build()} if the chain cannot be built
 	 */
@@ -64,7 +85,8 @@ public class SecurityConfig {
 	public SecurityFilterChain securityFilterChain(
 			HttpSecurity http,
 			JwtAuthenticationConverter jwtAuthenticationConverter,
-			CorsConfigurationSource corsConfigurationSource)
+			CorsConfigurationSource corsConfigurationSource,
+			InternalTokenFilter internalTokenFilter)
 			throws Exception {
 		http.csrf(AbstractHttpConfigurer::disable)
 				.cors(cors -> cors.configurationSource(corsConfigurationSource))
@@ -75,8 +97,11 @@ public class SecurityConfig {
 								authorize
 										.requestMatchers(PUBLIC_ACTUATOR_PATHS)
 										.permitAll()
+										.requestMatchers(INTERNAL_PATH_PATTERN)
+										.permitAll()
 										.anyRequest()
 										.authenticated())
+				.addFilterBefore(internalTokenFilter, UsernamePasswordAuthenticationFilter.class)
 				.oauth2ResourceServer(
 						oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)));
 		return http.build();

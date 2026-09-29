@@ -1,5 +1,6 @@
 package pt.diamondcars.dcbobackend.domain.lead;
 
+import java.util.Arrays;
 import pt.diamondcars.dcbobackend.domain.support.PersistentEnum;
 
 /**
@@ -28,5 +29,21 @@ public enum LeadStatus implements PersistentEnum {
 	@Override
 	public String getValue() {
 		return value;
+	}
+
+	/**
+	 * Resolves the constant whose {@link #getValue()} equals the given raw string, the inverse of
+	 * {@link #getValue()} — used by {@code LeadService} to map an incoming DTO's plain string field
+	 * onto this enum (TASK-010).
+	 *
+	 * @param value the raw database/JSON value to resolve, e.g. {@code "test_drive_marcado"}
+	 * @return the matching constant
+	 * @throws IllegalArgumentException if no constant has this value
+	 */
+	public static LeadStatus fromValue(String value) {
+		return Arrays.stream(values())
+				.filter(candidate -> candidate.getValue().equals(value))
+				.findFirst()
+				.orElseThrow(() -> new IllegalArgumentException("Unknown lead status: " + value));
 	}
 }
