@@ -136,6 +136,34 @@ class LeadControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-010-r1.md}): a {@code carroPreco} large enough to
+	 * overflow the {@code numeric(12,2)} column is rejected with 400, naming the offending field,
+	 * where it used to reach the database and surface as an unmapped 409 ({@code
+	 * DataIntegrityViolationException} — the same pattern already fixed for {@code CarRequest}/{@code
+	 * SellCarRequest} in TASK-008).
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void rejectsALeadWithACarroPrecoLargeEnoughToOverflowTheDatabaseColumn() throws Exception {
+		LeadRequest valid = validLeadRequest(null);
+		LeadRequest tooExpensive =
+				new LeadRequest(
+						valid.nome(), valid.telefone(), valid.email(), valid.notas(), valid.status(),
+						valid.followUpDate(), valid.carroId(), valid.carroMarca(), valid.carroModelo(),
+						new BigDecimal("99999999999"));
+
+		mockMvc
+				.perform(
+						post("/api/leads")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(tooExpensive)))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().string(containsString("carroPreco")));
+	}
+
+	/**
 	 * Acceptance criterion 2: {@code GET /api/leads?carroId=} returns only the lead about that car.
 	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}

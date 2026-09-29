@@ -1,5 +1,6 @@
 package pt.diamondcars.dcbobackend.web.dto;
 
+import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -44,7 +45,11 @@ import java.util.UUID;
  * @param carroModelo denormalized model snapshot of {@link #carroId} at lead time; only applied on
  *     creation
  * @param carroPreco denormalized price snapshot of {@link #carroId} at lead time; only applied on
- *     creation
+ *     creation; bounded by {@link CarRequest#PRICE_MAX_VALUE}, the same upper bound {@link
+ *     CarRequest#preco} enforces, so an out-of-range value is rejected here with 400 instead of
+ *     reaching the database and overflowing the {@code numeric(12,2)} column as a 409 (IMPORTANTE
+ *     3, {@code backlog/reviews/TASK-010-r1.md} — the same pattern already fixed for {@code
+ *     SellCarRequest} in TASK-008)
  */
 public record LeadRequest(
 		@NotBlank @Size(min = 2, max = 100) String nome,
@@ -56,7 +61,7 @@ public record LeadRequest(
 		UUID carroId,
 		@Size(max = 100) String carroMarca,
 		@Size(max = 100) String carroModelo,
-		@DecimalMin("0") BigDecimal carroPreco) {
+		@DecimalMin("0") @DecimalMax(CarRequest.PRICE_MAX_VALUE) BigDecimal carroPreco) {
 
 	/** Equivalent to {@code ClientRequest#PHONE_REGEXP} — leads share the same phone format. */
 	static final String PHONE_REGEXP = "^(\\+351\\s?)?[29]\\d{8}$";
