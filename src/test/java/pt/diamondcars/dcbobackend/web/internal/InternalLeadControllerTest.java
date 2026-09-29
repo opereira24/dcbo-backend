@@ -24,15 +24,31 @@ import pt.diamondcars.dcbobackend.web.dto.InternalLeadRequest;
 /**
  * End-to-end tests of {@link InternalLeadController}, {@link
  * pt.diamondcars.dcbobackend.service.LeadService#createFromWebsite}, {@link
- * pt.diamondcars.dcbobackend.config.InternalTokenFilter} and {@code SecurityConfig}'s {@code
- * /internal/**} rule (TASK-010, requirement 2), through the real servlet filter chain, using
- * {@link MockMvc} against a real PostgreSQL container ({@link AbstractPostgresIntegrationTest}).
+ * pt.diamondcars.dcbobackend.config.InternalTokenFilter} and {@code SecurityConfig}'s dedicated
+ * {@code /internal/**} filter chain (TASK-010, requirement 2), through the real servlet filter
+ * chain, using {@link MockMvc} against a real PostgreSQL container ({@link
+ * AbstractPostgresIntegrationTest}).
+ *
+ * <p>Fixes its own {@code catalog.sync.internal-token} instead of inheriting the production
+ * default from {@code application.yml} (IMPORTANTE 1, {@code backlog/reviews/TASK-010-r1.md}):
+ * that default is the {@code placeholder} literal, which {@link
+ * pt.diamondcars.dcbobackend.config.InternalTokenFilter} now always rejects, since it is a value
+ * visible in the repository, not a real secret. See {@code
+ * InternalTokenFilterInsecureConfigurationTest} for the test proving that rejection.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
+@SpringBootTest(
+		webEnvironment = SpringBootTest.WebEnvironment.MOCK,
+		properties = "catalog.sync.internal-token=" + InternalLeadControllerTest.TEST_TOKEN)
 @AutoConfigureMockMvc
 class InternalLeadControllerTest extends AbstractPostgresIntegrationTest {
 
 	private static final String TOKEN_HEADER = "X-Internal-Token";
+
+	/**
+	 * A token that satisfies {@link pt.diamondcars.dcbobackend.config.InternalTokenFilter}'s
+	 * minimum-length/not-a-placeholder rule, used only by this test class — never a real secret.
+	 */
+	static final String TEST_TOKEN = "test-only-internal-token-0123456789";
 
 	@Autowired private MockMvc mockMvc;
 	@Autowired private ObjectMapper objectMapper;
