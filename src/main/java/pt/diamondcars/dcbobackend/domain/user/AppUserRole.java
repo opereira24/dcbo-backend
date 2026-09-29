@@ -1,5 +1,6 @@
 package pt.diamondcars.dcbobackend.domain.user;
 
+import java.util.Arrays;
 import pt.diamondcars.dcbobackend.domain.support.PersistentEnum;
 
 /**
@@ -21,5 +22,22 @@ public enum AppUserRole implements PersistentEnum {
 	@Override
 	public String getValue() {
 		return value;
+	}
+
+	/**
+	 * Resolves the constant whose {@link #getValue()} equals the given raw string, the inverse of
+	 * {@link #getValue()} — used by {@code AppUserService} (TASK-012) to map an incoming DTO's
+	 * plain string field onto this enum, mirroring {@code
+	 * pt.diamondcars.dcbobackend.domain.lead.LeadStatus#fromValue(String)}.
+	 *
+	 * @param value the raw database/JSON value to resolve, e.g. {@code "admin"}
+	 * @return the matching constant
+	 * @throws IllegalArgumentException if no constant has this value
+	 */
+	public static AppUserRole fromValue(String value) {
+		return Arrays.stream(values())
+				.filter(candidate -> candidate.getValue().equals(value))
+				.findFirst()
+				.orElseThrow(() -> new IllegalArgumentException("Unknown app user role: " + value));
 	}
 }

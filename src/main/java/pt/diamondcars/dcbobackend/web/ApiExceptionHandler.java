@@ -24,11 +24,14 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import pt.diamondcars.dcbobackend.web.dto.ApiError;
 import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
+import pt.diamondcars.dcbobackend.web.exception.DuplicateAuthSubjectException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
+import pt.diamondcars.dcbobackend.web.exception.InactiveUserException;
 import pt.diamondcars.dcbobackend.web.exception.InvalidReferenceException;
 import pt.diamondcars.dcbobackend.web.exception.InvalidTransactionDateException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceInUseException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
+import pt.diamondcars.dcbobackend.web.exception.SelfDeletionException;
 
 /**
  * Central exception-to-HTTP-response translation for the whole API, per TASK-008 requirement 5.
@@ -124,6 +127,49 @@ public class ApiExceptionHandler {
 	public ResponseEntity<ApiError> handleInvalidTransactionDate(
 			InvalidTransactionDateException exception, HttpServletRequest request) {
 		return respond(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link DuplicateAuthSubjectException} ({@code POST /api/users} naming an {@code
+	 * authSubject} a profile already exists for, TASK-012 requirement 1) to 409.
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(DuplicateAuthSubjectException.class)
+	public ResponseEntity<ApiError> handleDuplicateAuthSubject(
+			DuplicateAuthSubjectException exception, HttpServletRequest request) {
+		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link SelfDeletionException} (an admin calling {@code DELETE /api/users/{id}} on their
+	 * own profile, TASK-012 requirement 1 / acceptance criterion 6) to 409.
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(SelfDeletionException.class)
+	public ResponseEntity<ApiError> handleSelfDeletion(
+			SelfDeletionException exception, HttpServletRequest request) {
+		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link InactiveUserException} (the authenticated caller's local profile has {@code active
+	 * = false}, TASK-012 requirement 4) to 403, thrown by {@link
+	 * pt.diamondcars.dcbobackend.config.ActiveUserInterceptor} before the controller method runs.
+	 *
+	 * @param exception the exception thrown by the interceptor
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 403 response body
+	 */
+	@ExceptionHandler(InactiveUserException.class)
+	public ResponseEntity<ApiError> handleInactiveUser(
+			InactiveUserException exception, HttpServletRequest request) {
+		return respond(HttpStatus.FORBIDDEN, exception.getMessage(), request);
 	}
 
 	/**
