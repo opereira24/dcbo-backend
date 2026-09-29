@@ -161,20 +161,43 @@ public class CarService {
 
 	/**
 	 * Deletes a car and its photos ({@code car_images} cascades by {@link Car#removeImage}/JPA
-	 * cascade), plus every transaction associated with it (TASK-011 requirement 4, equivalent to
-	 * {@code deleteCarTransactions} — {@code dcbo/src/services/firebaseService.js:415}), within the
-	 * same transaction: the {@code transactions.car_id ON DELETE SET NULL} foreign key alone would
-	 * only detach them, never delete the rows, so this must run before the car itself is deleted.
-	 * Never touches a consignment partner's {@code cars_count}/{@code total_commission} (TASK-009,
-	 * requirement 5 — see {@link #create}).
+	 * cascade), within the same transaction.
+	 *
+	 * <p>Whether the car's financial history goes with it is the caller's choice, mirroring {@code
+	 * dcbo}'s own confirmation dialog rather than the unconditional deletion this method used to
+	 * perform (TASK-011, {@code backlog/reviews/TASK-011-r1.md}, IMPORTANTE 1): {@code
+	 * dcbo/src/pages/cars.js:662-679} shows a checkbox, checked by default, "Eliminar também as
+	 * transações financeiras", whose unchecked label reads "As transações serão mantidas no registo
+	 * financeiro para histórico" — exactly the {@code transactions.car_id ON DELETE SET NULL}
+	 * foreign key (TASK-005) already does for free when {@code deleteTransactions} is {@code false}.
+	 * When it is {@code true} (the default, matching both {@code dcbo/src/pages/cars.js:13}'s
+	 * initial checkbox state and this task's requirement 4, which only describes this branch),
+	 * every transaction tied to the car is deleted outright — the {@code ON DELETE SET NULL} alone
+	 * would only detach them, never delete the rows, so {@link TransactionService#deleteAllForCar}
+	 * must run before the car itself is deleted — and, if the car was sold to a client, that
+	 * client's {@code purchases_count} is decremented, mirroring {@code
+	 * dcbo/src/App.js:304-306}'s {@code decrementClientPurchases}, called there under the exact same
+	 * condition ({@code deleteTransactions && car?.vendido && car?.clienteId}). Never touches a
+	 * consignment partner's {@code cars_count}/{@code total_commission} in either branch (TASK-009,
+	 * requirement 5 — see {@link #create}; {@code dcbo}'s {@code deleteCar} does not touch them
+	 * either).
 	 *
 	 * @param id the car's id
+	 * @param deleteTransactions whether to also delete every transaction tied to this car (and, if
+	 *     it was sold to a client, decrement that client's {@code purchases_count}); when {@code
+	 *     false}, transactions are left in place, detached from the car by the {@code ON DELETE SET
+	 *     NULL} foreign key
 	 * @throws ResourceNotFoundException if no car has this id (mapped to 404)
 	 */
 	@Transactional
-	public void delete(UUID id) {
+	public void delete(UUID id, boolean deleteTransactions) {
 		Car car = findOrThrow(id);
-		transactionService.deleteAllForCar(id);
+		if (deleteTransactions) {
+			transactionService.deleteAllForCar(id);
+			if (car.isVendido() && car.getClient() != null) {
+				decrementPurchases(car.getClient());
+			}
+		}
 		carRepository.delete(car);
 	}
 
