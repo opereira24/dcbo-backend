@@ -3,12 +3,15 @@ package pt.diamondcars.dcbobackend.domain.lead;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
 /**
  * Spring Data repository for {@link Lead}, with the derived query TASK-006 requirement 7 lists as
- * needed by the existing frontend.
+ * needed by the existing frontend, plus {@link JpaSpecificationExecutor} (TASK-010 requirement 1)
+ * so {@code GET /api/leads} can combine its optional {@code status}/{@code carroId} filters
+ * without one derived-query method per combination.
  */
-public interface LeadRepository extends JpaRepository<Lead, UUID> {
+public interface LeadRepository extends JpaRepository<Lead, UUID>, JpaSpecificationExecutor<Lead> {
 
 	/**
 	 * Lists every lead about a given car, most recently created first — equivalent to {@code
