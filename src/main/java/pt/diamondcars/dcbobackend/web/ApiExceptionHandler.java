@@ -31,6 +31,7 @@ import pt.diamondcars.dcbobackend.web.exception.InvalidReferenceException;
 import pt.diamondcars.dcbobackend.web.exception.InvalidTransactionDateException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceInUseException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
+import pt.diamondcars.dcbobackend.web.exception.SelfDeactivationException;
 import pt.diamondcars.dcbobackend.web.exception.SelfDeletionException;
 
 /**
@@ -154,6 +155,21 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(SelfDeletionException.class)
 	public ResponseEntity<ApiError> handleSelfDeletion(
 			SelfDeletionException exception, HttpServletRequest request) {
+		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link SelfDeactivationException} (an admin calling {@code PATCH
+	 * /api/users/{id}/active} with {@code active: false} naming their own profile, TASK-012
+	 * requirement 1, fixed by {@code backlog/reviews/TASK-012-r1.md} IMPORTANTE 2) to 409.
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 409 response body
+	 */
+	@ExceptionHandler(SelfDeactivationException.class)
+	public ResponseEntity<ApiError> handleSelfDeactivation(
+			SelfDeactivationException exception, HttpServletRequest request) {
 		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
 	}
 

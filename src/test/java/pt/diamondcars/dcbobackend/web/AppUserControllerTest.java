@@ -422,6 +422,58 @@ class AppUserControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
+	 * Regression test for {@code backlog/reviews/TASK-012-r1.md}, IMPORTANTE 2: an admin calling
+	 * {@code PATCH /api/users/{seu-proprio-id}/active} with {@code active: false} gets 409 instead
+	 * of 200, and the profile stays active — deactivating oneself, combined with {@link
+	 * pt.diamondcars.dcbobackend.config.ActiveUserInterceptor}, previously locked the caller out of
+	 * every authenticated endpoint (including this one and {@code GET /api/me}) with no way back
+	 * short of a manual database update.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void adminCannotDeactivateTheirOwnProfile() throws Exception {
+		AppUser self = anAppUser("auth0|self-deactivate", AppUserRole.ADMIN, true);
+
+		mockMvc
+				.perform(
+						patch("/api/users/{id}/active", self.getId())
+								.with(
+										jwt().jwt(jwt -> jwt.subject("auth0|self-deactivate"))
+												.authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(new AppUserActiveRequest(false))))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.status").value(409));
+
+		assertThat(appUserRepository.findById(self.getId()).orElseThrow().isActive()).isTrue();
+	}
+
+	/**
+	 * Counterpart of {@link #adminCannotDeactivateTheirOwnProfile()}: deactivating a different
+	 * profile (even another admin's) still succeeds (200) — the restriction is about self alone.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void adminCanDeactivateAnotherAdminsProfile() throws Exception {
+		AppUser other = anAppUser("auth0|other-admin", AppUserRole.ADMIN, true);
+
+		mockMvc
+				.perform(
+						patch("/api/users/{id}/active", other.getId())
+								.with(
+										jwt().jwt(jwt -> jwt.subject("auth0|deactivating-caller"))
+												.authorities(new SimpleGrantedAuthority(ADMIN_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(new AppUserActiveRequest(false))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.active").value(false));
+
+		assertThat(appUserRepository.findById(other.getId()).orElseThrow().isActive()).isFalse();
+	}
+
+	/**
 	 * The global rule from {@code SecurityConfig} (TASK-007), re-verified against this business
 	 * endpoint: no {@code Authorization} header responds 401.
 	 *

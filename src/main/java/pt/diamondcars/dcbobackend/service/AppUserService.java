@@ -16,6 +16,7 @@ import pt.diamondcars.dcbobackend.web.dto.AppUserResponse;
 import pt.diamondcars.dcbobackend.web.dto.AppUserUpdateRequest;
 import pt.diamondcars.dcbobackend.web.exception.DuplicateAuthSubjectException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
+import pt.diamondcars.dcbobackend.web.exception.SelfDeactivationException;
 import pt.diamondcars.dcbobackend.web.exception.SelfDeletionException;
 
 /**
@@ -121,14 +122,36 @@ public class AppUserService {
 	 * Activates or deactivates a profile, the combined equivalent of {@code
 	 * deactivateUser}/{@code activateUser} in {@code dcbo/src/services/firebaseService.js:714-737}.
 	 *
+	 * <p>Refuses to deactivate the authenticated caller's own profile (see {@link
+	 * SelfDeletionException}'s Javadoc for the shared lockout reasoning, and {@code
+	 * backlog/reviews/TASK-012-r1.md}, IMPORTANTE 2): {@link
+	 * pt.diamondcars.dcbobackend.config.ActiveUserInterceptor} blocks every authenticated endpoint,
+	 * this one included, for a {@code sub} whose local profile is inactive, so a self-deactivating
+	 * admin with no other admin profile would have no way back in short of a manual database update.
+	 * Reactivating oneself ({@code active = true}) is never reachable through this path in the first
+	 * place, because the interceptor already turned away the request before the controller method
+	 * runs — no extra check is needed for it.
+	 *
 	 * @param id the profile's id
 	 * @param request the validated payload carrying the new {@code active} state
 	 * @return the updated profile
 	 * @throws ResourceNotFoundException if no profile has this id (mapped to 404)
+	 * @throws SelfDeactivationException if {@code id} is the authenticated caller's own profile and
+	 *     {@code request.active()} is {@code false} (mapped to 409)
 	 */
 	@Transactional
 	public AppUserResponse setActive(UUID id, AppUserActiveRequest request) {
 		AppUser appUser = findOrThrow(id);
+		if (Boolean.FALSE.equals(request.active())) {
+			authenticatedUserProvider
+					.getCurrentUserSubject()
+					.filter(subject -> subject.equals(appUser.getAuthSubject()))
+					.ifPresent(
+							subject -> {
+								throw new SelfDeactivationException(
+										"Nao e possivel desativar o proprio perfil: " + id);
+							});
+		}
 		appUser.setActive(request.active());
 		return AppUserResponse.from(appUser);
 	}
