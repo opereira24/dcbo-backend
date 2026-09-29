@@ -16,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,8 @@ import pt.diamondcars.dcbobackend.domain.car.Car;
 import pt.diamondcars.dcbobackend.domain.car.CarRepository;
 import pt.diamondcars.dcbobackend.domain.client.Client;
 import pt.diamondcars.dcbobackend.domain.client.ClientRepository;
+import pt.diamondcars.dcbobackend.domain.partner.Partner;
+import pt.diamondcars.dcbobackend.domain.partner.PartnerRepository;
 import pt.diamondcars.dcbobackend.domain.transaction.Transaction;
 import pt.diamondcars.dcbobackend.domain.transaction.TransactionRepository;
 import pt.diamondcars.dcbobackend.domain.transaction.TransactionType;
@@ -55,6 +58,7 @@ class TransactionControllerTest extends AbstractPostgresIntegrationTest {
 	@Autowired private TransactionRepository transactionRepository;
 	@Autowired private CarRepository carRepository;
 	@Autowired private ClientRepository clientRepository;
+	@Autowired private PartnerRepository partnerRepository;
 
 	/**
 	 * Clears every row this class writes before each test, for the same reason {@code
@@ -66,6 +70,7 @@ class TransactionControllerTest extends AbstractPostgresIntegrationTest {
 		transactionRepository.deleteAll();
 		carRepository.deleteAll();
 		clientRepository.deleteAll();
+		partnerRepository.deleteAll();
 	}
 
 	private static TransactionRequest aRequest() {
@@ -483,27 +488,37 @@ class TransactionControllerTest extends AbstractPostgresIntegrationTest {
 	}
 
 	/**
-	 * Acceptance criterion 4: deleting a car with 2 transactions removes both.
+	 * Acceptance criterion 4: deleting a car with 2 transactions removes both — proved by id, not by
+	 * {@link TransactionRepository#findByCarId}, because {@code transactions.car_id} is {@code ON
+	 * DELETE SET NULL} (TASK-005, {@code V1__init.sql:92}): a car deletion that merely detached the
+	 * transactions (leaving them with {@code car_id = NULL}, the {@code deleteTransactions=false}
+	 * branch of {@code DELETE /api/cars/{id}} added by {@code backlog/reviews/TASK-011-r1.md}
+	 * IMPORTANTE 2) would still make {@code findByCarId} return empty, so that query alone cannot
+	 * distinguish "deleted" from "merely disassociated". Deliberately calls the endpoint without
+	 * {@code ?deleteTransactions=}, proving {@code true} is still the default (requirement 4 never
+	 * describes opting out).
 	 *
 	 * @throws Exception propagated from {@link MockMvc#perform}
 	 */
 	@Test
 	void deletingACarRemovesItsTransactions() throws Exception {
 		Car car = carRepository.saveAndFlush(aPersistedCar().build());
-		transactionRepository.saveAndFlush(
-				Transaction.builder()
-						.tipo(TransactionType.COMPRA)
-						.valor(new BigDecimal("18000.00"))
-						.data(LocalDate.of(2026, 1, 1))
-						.car(car)
-						.build());
-		transactionRepository.saveAndFlush(
-				Transaction.builder()
-						.tipo(TransactionType.DESPESA)
-						.valor(new BigDecimal("300.00"))
-						.data(LocalDate.of(2026, 1, 5))
-						.car(car)
-						.build());
+		Transaction first =
+				transactionRepository.saveAndFlush(
+						Transaction.builder()
+								.tipo(TransactionType.COMPRA)
+								.valor(new BigDecimal("18000.00"))
+								.data(LocalDate.of(2026, 1, 1))
+								.car(car)
+								.build());
+		Transaction second =
+				transactionRepository.saveAndFlush(
+						Transaction.builder()
+								.tipo(TransactionType.DESPESA)
+								.valor(new BigDecimal("300.00"))
+								.data(LocalDate.of(2026, 1, 5))
+								.car(car)
+								.build());
 
 		assertThat(transactionRepository.findByCarId(car.getId())).hasSize(2);
 
@@ -512,6 +527,127 @@ class TransactionControllerTest extends AbstractPostgresIntegrationTest {
 						delete("/api/cars/{id}", car.getId())
 								.with(jwt().authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
 				.andExpect(status().isNoContent());
+
+		assertThat(transactionRepository.findAllById(List.of(first.getId(), second.getId()))).isEmpty();
+	}
+
+	/**
+	 * Requirement 4 refinement ({@code backlog/reviews/TASK-011-r1.md} IMPORTANTE 1): {@code
+	 * DELETE /api/cars/{id}?deleteTransactions=false} keeps a car's transactions, mirroring the
+	 * unchecked state of {@code dcbo}'s "Eliminar também as transações financeiras" checkbox ({@code
+	 * dcbo/src/pages/cars.js:662-679}) — the {@code ON DELETE SET NULL} foreign key detaches them
+	 * ({@code carroId} becomes {@code null}) but the rows, and their contribution to {@code saldo},
+	 * survive.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void deletingACarWithDeleteTransactionsFalseKeepsItsTransactions() throws Exception {
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+		Transaction kept =
+				transactionRepository.saveAndFlush(
+						Transaction.builder()
+								.tipo(TransactionType.COMPRA)
+								.valor(new BigDecimal("18000.00"))
+								.data(LocalDate.of(2026, 1, 1))
+								.car(car)
+								.build());
+
+		mockMvc
+				.perform(
+						delete("/api/cars/{id}", car.getId())
+								.queryParam("deleteTransactions", "false")
+								.with(jwt().authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+				.andExpect(status().isNoContent());
+
+		Transaction reloaded = transactionRepository.findById(kept.getId()).orElseThrow();
+		assertThat(reloaded.getCar()).isNull();
+	}
+
+	/**
+	 * Requirement 4 refinement ({@code backlog/reviews/TASK-011-r1.md} IMPORTANTE 1): deleting a
+	 * sold car with {@code deleteTransactions=true} (the default) also decrements the buying
+	 * client's {@code purchasesCount}, mirroring {@code dcbo/src/App.js:304-306}'s {@code
+	 * decrementClientPurchases}, called there under the same condition.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void deletingASoldCarDecrementsTheBuyingClientsPurchasesCount() throws Exception {
+		Client client =
+				clientRepository.saveAndFlush(Client.builder().name("Cliente Teste").phone("912345678").build());
+		Car car = carRepository.saveAndFlush(aPersistedCar().build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), client.getId());
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+		assertThat(clientRepository.findById(client.getId()).orElseThrow().getPurchasesCount()).isEqualTo(1);
+
+		mockMvc
+				.perform(
+						delete("/api/cars/{id}", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+				.andExpect(status().isNoContent());
+
+		assertThat(clientRepository.findById(client.getId()).orElseThrow().getPurchasesCount()).isEqualTo(0);
+	}
+
+	/**
+	 * IMPORTANTE 3 ({@code backlog/reviews/TASK-011-r1.md}): selling a consignment car creates the
+	 * automatic {@code venda} transaction with the partner's <em>commission</em> as {@code valor},
+	 * never the full sale price ({@code CarService.java:223-229}) — it is real money in {@code
+	 * saldo}, and the gap between the two is 20× in a typical sale, yet no test covered this branch
+	 * before this fix ({@code grep -rn "comissao_venda" src/test} was empty). Also proves the
+	 * commission, not the sale price, is what {@code GET /api/finances/summary} counts, and that
+	 * {@code revert-sale} removes it like any other system-generated sale transaction.
+	 *
+	 * @throws Exception propagated from {@link MockMvc#perform}
+	 */
+	@Test
+	void sellingAConsignmentCarCreatesAVendaTransactionForTheCommissionNotTheSalePrice() throws Exception {
+		Partner partner = partnerRepository.saveAndFlush(Partner.builder().name("Parceiro Teste").build());
+		Car car =
+				carRepository.saveAndFlush(
+						aPersistedCar()
+								.consignacao(true)
+								.partner(partner)
+								.commissionValue(new BigDecimal("1000.00"))
+								.build());
+		SellCarRequest sellRequest = new SellCarRequest(new BigDecimal("21000.00"), null);
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/sell", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE)))
+								.contentType(MediaType.APPLICATION_JSON)
+								.content(objectMapper.writeValueAsString(sellRequest)))
+				.andExpect(status().isOk());
+
+		assertThat(transactionRepository.findByCarId(car.getId())).hasSize(1);
+		Transaction commissionTransaction = transactionRepository.findByCarId(car.getId()).get(0);
+		assertThat(commissionTransaction.getTipo()).isEqualTo(TransactionType.VENDA);
+		assertThat(commissionTransaction.getValor()).isEqualByComparingTo(new BigDecimal("1000.00"));
+		assertThat(commissionTransaction.getCategoria()).isEqualTo("comissao_venda");
+		assertThat(commissionTransaction.getPartner()).isNotNull();
+		assertThat(commissionTransaction.getPartner().getId()).isEqualTo(partner.getId());
+		assertThat(commissionTransaction.isSystemGenerated()).isTrue();
+
+		mockMvc
+				.perform(
+						get("/api/finances/summary")
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.totalReceitas").value(1000.00));
+
+		mockMvc
+				.perform(
+						post("/api/cars/{id}/revert-sale", car.getId())
+								.with(jwt().authorities(new SimpleGrantedAuthority(USER_ROLE))))
+				.andExpect(status().isOk());
 
 		assertThat(transactionRepository.findByCarId(car.getId())).isEmpty();
 	}
