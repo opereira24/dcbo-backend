@@ -46,6 +46,7 @@ public class CarService {
 	private final ClientRepository clientRepository;
 	private final PartnerRepository partnerRepository;
 	private final PartnerService partnerService;
+	private final TransactionService transactionService;
 
 	/**
 	 * Creates the service with its collaborating repositories.
@@ -57,16 +58,21 @@ public class CarService {
 	 * @param partnerService keeps a consignment partner's {@code cars_count}/{@code
 	 *     total_commission} in sync on a car's sale and the reversal of that sale (TASK-009,
 	 *     requirement 5 — see {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3)
+	 * @param transactionService keeps the automatically-generated sale transaction, and every
+	 *     transaction tied to a car, in sync with a car's sale/reversal/deletion (TASK-011,
+	 *     requirements 3-4)
 	 */
 	public CarService(
 			CarRepository carRepository,
 			ClientRepository clientRepository,
 			PartnerRepository partnerRepository,
-			PartnerService partnerService) {
+			PartnerService partnerService,
+			TransactionService transactionService) {
 		this.carRepository = carRepository;
 		this.clientRepository = clientRepository;
 		this.partnerRepository = partnerRepository;
 		this.partnerService = partnerService;
+		this.transactionService = transactionService;
 	}
 
 	/**
@@ -155,15 +161,43 @@ public class CarService {
 
 	/**
 	 * Deletes a car and its photos ({@code car_images} cascades by {@link Car#removeImage}/JPA
-	 * cascade). Never touches a consignment partner's {@code cars_count}/{@code total_commission}
-	 * (TASK-009, requirement 5 — see {@link #create}).
+	 * cascade), within the same transaction.
+	 *
+	 * <p>Whether the car's financial history goes with it is the caller's choice, mirroring {@code
+	 * dcbo}'s own confirmation dialog rather than the unconditional deletion this method used to
+	 * perform (TASK-011, {@code backlog/reviews/TASK-011-r1.md}, IMPORTANTE 1): {@code
+	 * dcbo/src/pages/cars.js:662-679} shows a checkbox, checked by default, "Eliminar também as
+	 * transações financeiras", whose unchecked label reads "As transações serão mantidas no registo
+	 * financeiro para histórico" — exactly the {@code transactions.car_id ON DELETE SET NULL}
+	 * foreign key (TASK-005) already does for free when {@code deleteTransactions} is {@code false}.
+	 * When it is {@code true} (the default, matching both {@code dcbo/src/pages/cars.js:13}'s
+	 * initial checkbox state and this task's requirement 4, which only describes this branch),
+	 * every transaction tied to the car is deleted outright — the {@code ON DELETE SET NULL} alone
+	 * would only detach them, never delete the rows, so {@link TransactionService#deleteAllForCar}
+	 * must run before the car itself is deleted — and, if the car was sold to a client, that
+	 * client's {@code purchases_count} is decremented, mirroring {@code
+	 * dcbo/src/App.js:304-306}'s {@code decrementClientPurchases}, called there under the exact same
+	 * condition ({@code deleteTransactions && car?.vendido && car?.clienteId}). Never touches a
+	 * consignment partner's {@code cars_count}/{@code total_commission} in either branch (TASK-009,
+	 * requirement 5 — see {@link #create}; {@code dcbo}'s {@code deleteCar} does not touch them
+	 * either).
 	 *
 	 * @param id the car's id
+	 * @param deleteTransactions whether to also delete every transaction tied to this car (and, if
+	 *     it was sold to a client, decrement that client's {@code purchases_count}); when {@code
+	 *     false}, transactions are left in place, detached from the car by the {@code ON DELETE SET
+	 *     NULL} foreign key
 	 * @throws ResourceNotFoundException if no car has this id (mapped to 404)
 	 */
 	@Transactional
-	public void delete(UUID id) {
+	public void delete(UUID id, boolean deleteTransactions) {
 		Car car = findOrThrow(id);
+		if (deleteTransactions) {
+			transactionService.deleteAllForCar(id);
+			if (car.isVendido() && car.getClient() != null) {
+				decrementPurchases(car.getClient());
+			}
+		}
 		carRepository.delete(car);
 	}
 
@@ -175,7 +209,10 @@ public class CarService {
 	 * Car#getCommissionValue()} and {@code cars_count} by one, when the car is a consignment car —
 	 * mirroring {@code dcbo/src/App.js:350-351}, where {@code addPartnerCommission}/{@code
 	 * incrementPartnerCars} are called together, only from {@code sellCar} (TASK-009,
-	 * {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3).
+	 * {@code backlog/reviews/TASK-009-r1.md}, IMPORTANTE 3). Also creates the system-generated {@code
+	 * venda} transaction {@code sellCar} itself creates ({@code dcbo/src/App.js:337-364}, TASK-011
+	 * requirement 3) — a commission-only transaction for a consignment sale, or the full sale price
+	 * otherwise.
 	 *
 	 * <p>Only a car that is not currently marked as sold may be sold: the {@code dcbo} frontend
 	 * only ever offers the "sell" action from the list of available cars ({@code
@@ -206,6 +243,20 @@ public class CarService {
 		if (car.isConsignacao() && car.getPartner() != null) {
 			partnerService.registerCommission(car.getPartner(), car.getCommissionValue());
 			partnerService.incrementCarsCount(car.getPartner());
+			BigDecimal commission = car.getCommissionValue() != null ? car.getCommissionValue() : BigDecimal.ZERO;
+			transactionService.createSaleTransaction(
+					car,
+					commission,
+					"Comissao: " + car.getMarca() + " " + car.getModelo(),
+					"comissao_venda",
+					car.getPartner());
+		} else {
+			transactionService.createSaleTransaction(
+					car,
+					request.precoVenda(),
+					"Venda: " + car.getMarca() + " " + car.getModelo(),
+					"venda_veiculo",
+					null);
 		}
 		return CarResponse.from(car);
 	}
@@ -216,7 +267,12 @@ public class CarService {
 	 * {@code purchases_count} within the same transaction (requirement 4), plus — ASSUNÇÃO, see
 	 * {@link PartnerService#reverseCommission} — the consignment partner's {@code total_commission}
 	 * and {@code cars_count} back out by what {@link #sell} added, when the car is a consignment
-	 * car.
+	 * car. Also removes the system-generated sale transaction {@link #sell} created (TASK-011
+	 * requirement 3, equivalent to {@code deleteSaleTransaction} — {@code
+	 * dcbo/src/services/firebaseService.js:427}), scoped by {@link
+	 * pt.diamondcars.dcbobackend.domain.transaction.Transaction#isSystemGenerated()} so a manual
+	 * {@code venda}-typed transaction for the same car is never removed by a reversal it has nothing
+	 * to do with.
 	 *
 	 * <p>A car that is not currently marked as sold is left completely untouched (a total no-op,
 	 * still returning 200): {@code backlog/reviews/TASK-008-r2.md}, D3 already established this
@@ -243,6 +299,7 @@ public class CarService {
 			partnerService.reverseCommission(car.getPartner(), car.getCommissionValue());
 			partnerService.decrementCarsCount(car.getPartner());
 		}
+		transactionService.deleteSaleTransactions(id);
 		car.setVendido(false);
 		car.setPrecoVenda(null);
 		car.setDataVenda(null);

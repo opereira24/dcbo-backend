@@ -107,12 +107,12 @@ public class CarController {
 	}
 
 	/**
-	 * Deletes a car and its photos.
+	 * Deletes a car and its photos, optionally also its financial history.
 	 *
 	 * <p>Restricted to {@code ROLE_ADMIN}: unlike every other endpoint in this controller (open to
 	 * any authenticated back-office user, matching today's behaviour where {@code dcbo} lets any
-	 * logged-in user manage cars), deleting a car is irreversible and destroys financial history
-	 * tied to it, so this is the one operation this task chooses to gate by role.
+	 * logged-in user manage cars), deleting a car is irreversible, so this is the one operation this
+	 * task chooses to gate by role.
 	 *
 	 * <p>ASSUNÇÃO: no requirement or acceptance criterion of TASK-008 names a specific
 	 * role-restricted endpoint; this choice, and the {@code @PreAuthorize} annotation itself, exist
@@ -122,14 +122,21 @@ public class CarController {
 	 * removed by a future refactor.
 	 *
 	 * @param id the car's id
+	 * @param deleteTransactions whether to also delete every transaction tied to this car, mirroring
+	 *     {@code dcbo}'s "Eliminar também as transações financeiras" checkbox ({@code
+	 *     dcbo/src/pages/cars.js:662-679}), checked by default — see {@link CarService#delete} for
+	 *     what each value does; defaults to {@code true} so the previous, unconditional behaviour
+	 *     (and this task's acceptance criterion 4) keeps working for a caller that does not pass it
 	 * @throws org.springframework.security.access.AccessDeniedException if the caller lacks {@code
 	 *     ROLE_ADMIN} (mapped to 403 by {@link ApiExceptionHandler})
 	 */
 	@DeleteMapping("/{id}")
 	@PreAuthorize("hasRole('ADMIN')")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
-	public void delete(@PathVariable UUID id) {
-		carService.delete(id);
+	public void delete(
+			@PathVariable UUID id,
+			@RequestParam(defaultValue = "true") boolean deleteTransactions) {
+		carService.delete(id, deleteTransactions);
 	}
 
 	/**

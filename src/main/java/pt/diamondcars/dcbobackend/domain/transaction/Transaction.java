@@ -28,6 +28,12 @@ import pt.diamondcars.dcbobackend.domain.support.AbstractAuditableDomainEntity;
  * V1__init.sql:8-12}), so it is modeled as {@link LocalDate}, never {@link
  * java.time.OffsetDateTime}, to avoid the timezone off-by-one the TASK-005 review fixed
  * (IMP-4).
+ *
+ * <p>{@link #systemGenerated} (added by {@code V3__transactions_system_generated_flag.sql},
+ * TASK-011 requirement 3) marks a transaction created automatically by {@code CarService#sell} —
+ * the counterpart to {@code venda}/comissão transactions {@code dcbo}'s {@code sellCar} used to
+ * write — so {@code CarService#revertSale} can remove exactly the one it created, never a manual
+ * transaction that happens to share the same {@code tipo}/{@code car_id}.
  */
 @Getter
 @Setter
@@ -65,4 +71,8 @@ public class Transaction extends AbstractAuditableDomainEntity {
 	@ManyToOne(fetch = FetchType.LAZY)
 	@JoinColumn(name = "partner_id")
 	private Partner partner;
+
+	@Builder.Default
+	@Column(name = "system_generated", nullable = false)
+	private boolean systemGenerated = false;
 }

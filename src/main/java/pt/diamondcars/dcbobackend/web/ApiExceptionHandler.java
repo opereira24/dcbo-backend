@@ -25,6 +25,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import pt.diamondcars.dcbobackend.web.dto.ApiError;
 import pt.diamondcars.dcbobackend.web.exception.CarAlreadySoldException;
 import pt.diamondcars.dcbobackend.web.exception.HighlightLimitExceededException;
+import pt.diamondcars.dcbobackend.web.exception.InvalidReferenceException;
+import pt.diamondcars.dcbobackend.web.exception.InvalidTransactionDateException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceInUseException;
 import pt.diamondcars.dcbobackend.web.exception.ResourceNotFoundException;
 
@@ -94,6 +96,34 @@ public class ApiExceptionHandler {
 	public ResponseEntity<ApiError> handleResourceInUse(
 			ResourceInUseException exception, HttpServletRequest request) {
 		return respond(HttpStatus.CONFLICT, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link InvalidReferenceException} (TASK-011 requirement 2: {@code
+	 * TransactionRequest#carroId} naming a car that does not exist) to 400.
+	 *
+	 * @param exception the exception thrown by the service layer
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 400 response body
+	 */
+	@ExceptionHandler(InvalidReferenceException.class)
+	public ResponseEntity<ApiError> handleInvalidReference(
+			InvalidReferenceException exception, HttpServletRequest request) {
+		return respond(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
+	}
+
+	/**
+	 * Maps {@link InvalidTransactionDateException} (TASK-011 requirement 7: {@code
+	 * TransactionRequest#data()} matching neither of the two formats {@code dcbo} sends) to 400.
+	 *
+	 * @param exception the exception thrown by the DTO's date-resolution logic
+	 * @param request the failed request, used to report {@link ApiError#path()}
+	 * @return the 400 response body
+	 */
+	@ExceptionHandler(InvalidTransactionDateException.class)
+	public ResponseEntity<ApiError> handleInvalidTransactionDate(
+			InvalidTransactionDateException exception, HttpServletRequest request) {
+		return respond(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
 	}
 
 	/**
